@@ -91,27 +91,31 @@ This harness supports running vLLM models with MLPerf Loadgen in both offline an
 <br>
 
 ### Running the harness for MLPerf Server Scenario 
+
+First define a set of environment variables to make running these commands easier
+
+```
+export MODEL_PATH=/path/to/model
+export DATASET_PATH=/path/to/dataset
+export MLPERF_OUTPUT_DIR=/path/for/logs
+export RUN_MODE=<acurracy|performance|compliance>
+```
+
 #### 1. On H100 [Specifying the optimized configuration used during final submission]
 - A. Spin up the vllm server<br>
 ```
-vllm serve --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens 1024 --max-num-seqs 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256`
+vllm serve ${MODEL_PATH} --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens 1024 --max-num-seqs 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256`
 ```
 - B. Run the harness for performance <br>
 ```
 python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
-         --user-conf user.conf  --test-mode performance --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
+         --user-conf user.conf --test-mode ${RUN_MODE} --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
           --api-server-url http://localhost:8000 --coalesce >& output.log 
 ```
-- C. Run the harness for accuracy <br>
-```
-python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
-         --user-conf user.conf  --test-mode accuracy --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
-          --api-server-url http://localhost:8000 --coalesce >& output.log 
-```
-- D. Alternatively we could use the `run_server_submission.sh'
+- C. Alternatively we could use the `run_server_submission.sh'
   - Use it with the following command line <br>
     ```
-    nohup bash run_server_submission.sh H100 <MODEL_PATH> <DATASET_PATH> <OUTPUT_DIR> 39.5 auto <accuracy|performance|compliance>  --max-model-len 131072 --disable-log-requests   --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens  1024 --max-num-seqs 512 --cuda-graph-sizes 4232  --long-prefill-token-threshold 256 &
+    nohup bash run_server_submission.sh H100 ${MODEL_PATH} {DATASET_PATH} ${MLPERF_OUTPUT_DIR} 39.5 auto ${RUN_MODE} --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens  1024 --max-num-seqs 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256 &
     ```
   - Additionally in `run_server_submission.sh` do specify the `--coalesce` for the performance run
     ```
@@ -134,7 +138,7 @@ python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-pa
 #### 2. On L40S [Specifying the optimized configuration used during final submission]
 - A. Run `run_server_submission.sh` <br>
  ```
- bash run_server_submission.sh L40S <MODEL_PATH> <DATASET_PATH>  <OUTPUT_DIR>  9.3  fp8 performance  --kv-cache-dtype fp8 --max-model-len 2668   --gpu-memory-utilization 0.96 --disable-log-requests
+ bash run_server_submission.sh L40S ${MODEL_PATH} ${DATASET_PATH} ${MLPERF_OUTPUT_DIR} 9.3 fp8 performance --kv-cache-dtype fp8 --max-model-len 2668 --gpu-memory-utilization 0.96 --disable-log-requests
 ```
 - B. Alternatively <br>
   - Use steps A and B as mentioned for H100. Not that we do not use `--coalesce' for the L40s while running the harness
@@ -143,12 +147,12 @@ python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-pa
 ### Running the harness for MLPerf Offline Scenario 
 #### 1. On H100 [Specifying the optimized configuration used during final submission]
 ```
-python3 SUT_VLLM_SingleReplica.py --model <model_path> --dataset_path <dataset_path> --user-conf h100_user.conf --test-mode performance --output-log-dir <output_dir> --max-model-len 131072 --max-num-seqs 1024 --kv-cache-dtype fp8 --max-num-batched-tokens 4096 --batch-size 40104
+python3 SUT_VLLM_SingleReplica.py --model ${MODEL_PATH} --dataset_path ${DATASET_PATH} --user-conf h100_user.conf --test-mode performance --output-log-dir ${MLPERF_OUTPUT_DIR} --max-model-len 131072 --max-num-seqs 1024 --kv-cache-dtype fp8 --max-num-batched-tokens 4096 --batch-size 40104
 ```
 
 #### 2. On L40s [Specifying the optimized configuration used during final submission]
  ```
- python3 SUT_VLLM_SingleReplica.py --model <model_path> --dataset_path <dataset_path>  --user-conf user.conf --test-mode performance --output-log-dir <output_dir> --max-model-len 2668 --kv-cache-dtype fp8 --max-model-len 2668 --max-num-seqs 512 --long-prefill-token-threshold 256 --max-num-partial-prefills 1 --max_num_batched_tokens 16384 --cuda-graph-sizes 3000 --max-num-seqs 512 --gpu-memory-utilization 0.95 --batch-size 40104
+ python3 SUT_VLLM_SingleReplica.py --model ${MODEL_PATH} --dataset_path ${DATASET_PATH} --user-conf user.conf --test-mode performance --output-log-dir ${MLPERF_OUTPUT_DIR} --max-model-len 2668 --kv-cache-dtype fp8 --max-model-len 2668 --max-num-seqs 512 --long-prefill-token-threshold 256 --max-num-partial-prefills 1 --max_num_batched_tokens 16384 --cuda-graph-sizes 3000 --max-num-seqs 512 --gpu-memory-utilization 0.95 --batch-size 40104
 ```
 > [!NOTE]
 > - To run the harness for compliance add `--audit-conf <path_to_audit>/audit.config` to the harness command line <br>
