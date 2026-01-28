@@ -100,6 +100,10 @@ def add_common_harness_args(parser: argparse.ArgumentParser):
     parser.add_argument("--print-token-stats", action="store_true",
                        help="Print token statistics (input/output token counts, ratios) and generate histograms")
     
+    # LoadGen trace logging
+    parser.add_argument("--enable-trace", action="store_true",
+                       help="Enable LoadGen trace logging (sets log_settings.enable_trace=True)")
+    
     # LoadGen audit config
     parser.add_argument("--audit-config", type=str, default=None,
                        help="Path to audit configuration file for LoadGen (passed to StartTestWithLogSettings)")
@@ -232,6 +236,7 @@ def parse_common_harness_args(args):
         'engine_args': engine_args,
         'debug_mode': args.debug_mode if hasattr(args, 'debug_mode') else False,
         'print_token_stats': args.print_token_stats if hasattr(args, 'print_token_stats') else False,
+        'enable_trace': args.enable_trace if hasattr(args, 'enable_trace') else False,
         'audit_config': args.audit_config if hasattr(args, 'audit_config') else None
     }
 

@@ -107,6 +107,7 @@ class BaseHarness:
                  engine_args: Optional[list] = None,
                  debug_mode: bool = False,
                  print_token_stats: bool = False,
+                 enable_trace: bool = False,
                  audit_config: Optional[str] = None):
         """
         Initialize base harness.
@@ -140,6 +141,7 @@ class BaseHarness:
             engine_args: List of engine arguments to override server config (e.g., ['--tensor-parallel-size', '2'])
             debug_mode: Enable debug mode
             print_token_stats: Print token statistics and generate histograms
+            enable_trace: Enable LoadGen trace logging
             audit_config: Path to audit configuration file for LoadGen
         """
         # Setup logging early so we can use it in initialization
@@ -203,6 +205,9 @@ class BaseHarness:
         
         # Token statistics
         self.print_token_stats = print_token_stats
+        
+        # LoadGen trace logging
+        self.enable_trace = enable_trace
         
         # Audit config
         self.audit_config = audit_config
@@ -1146,7 +1151,7 @@ class BaseHarness:
             
             log_settings = lg.LogSettings()
             log_settings.log_output = log_output_settings
-            log_settings.enable_trace = False
+            log_settings.enable_trace = self.enable_trace
             
             self.logger.info(f"MLPerf LoadGen output directory: {self.mlperf_output_dir}")
             
