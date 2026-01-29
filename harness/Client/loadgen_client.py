@@ -190,6 +190,20 @@ class LoadGenClient(BaseClient):
         # Offline scenario: send requests back-to-back instead of batching
         self.offline_back_to_back = config.get('offline_back_to_back', False) if config else False
         
+        # Log offline_back_to_back status for debugging
+        if self.scenario == "Offline":
+            if self.offline_back_to_back:
+                self.logger.info("=" * 80)
+                self.logger.info("CLIENT: offline_back_to_back = True")
+                self.logger.info("CLIENT: Will send requests individually (one per API call)")
+                self.logger.info("CLIENT: No client-side batching")
+                self.logger.info("=" * 80)
+            else:
+                self.logger.info("=" * 80)
+                self.logger.info("CLIENT: offline_back_to_back = False (default)")
+                self.logger.info(f"CLIENT: Will batch requests with batch_size={self.batch_size}")
+                self.logger.info("=" * 80)
+        
         # Debug mode for accuracy mode
         self.debug_mode = config.get('debug_mode', False) if config else False
         
@@ -885,6 +899,7 @@ class LoadGenOfflineClient(LoadGenClient):
             self.logger.info(f"OFFLINE SCENARIO: Processing {total_samples} queries back-to-back")
             self.logger.info(f"Mode: Individual API requests (one prompt per request, no batching)")
             self.logger.info(f"Total samples: {total_samples}")
+            self.logger.info(f"offline_back_to_back flag: {self.offline_back_to_back}")
             self.logger.info("=" * 80)
             
             processed_samples = 0
@@ -920,6 +935,7 @@ class LoadGenOfflineClient(LoadGenClient):
             self.logger.info("=" * 80)
             self.logger.info(f"OFFLINE SCENARIO: Processing {total_samples} queries in {num_batches} batches")
             self.logger.info(f"Batch size: {self.batch_size}, Total samples: {total_samples}")
+            self.logger.info(f"offline_back_to_back flag: {self.offline_back_to_back} (using batch mode)")
             self.logger.info("=" * 80)
             
             processed_samples = 0
@@ -963,6 +979,9 @@ class LoadGenOfflineClient(LoadGenClient):
         This method sends ONE prompt in ONE API request - no batching.
         Each call to this method results in a separate HTTP request to the API server.
         """
+        # Log that we're processing a single request (not a batch)
+        self.logger.debug(f"[BACK-TO-BACK MODE] Processing single query {q_sample.id} (index {q_sample.index}) - individual API request")
+        
         # Get input IDs from dataset
         input_ids = self.dataset.input_ids[q_sample.index]
         

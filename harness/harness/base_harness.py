@@ -108,6 +108,7 @@ class BaseHarness:
                  debug_mode: bool = False,
                  print_token_stats: bool = False,
                  enable_trace: bool = False,
+                 offline_back_to_back: bool = False,
                  audit_config: Optional[str] = None):
         """
         Initialize base harness.
@@ -142,6 +143,7 @@ class BaseHarness:
             debug_mode: Enable debug mode
             print_token_stats: Print token statistics and generate histograms
             enable_trace: Enable LoadGen trace logging
+            offline_back_to_back: Client flag - send requests individually instead of batching (Offline scenario only)
             audit_config: Path to audit configuration file for LoadGen
         """
         # Setup logging early so we can use it in initialization
@@ -208,6 +210,9 @@ class BaseHarness:
         
         # LoadGen trace logging
         self.enable_trace = enable_trace
+        
+        # Client flag: offline_back_to_back (controls how client sends requests, not server config)
+        self.offline_back_to_back = offline_back_to_back
         
         # Audit config
         self.audit_config = audit_config
@@ -580,6 +585,24 @@ class BaseHarness:
         # Add visualizations_output_dir to client config so histograms can be saved there
         if hasattr(self, 'visualizations_output_dir'):
             client_config['visualizations_output_dir'] = str(self.visualizations_output_dir)
+        
+        # offline_back_to_back is a CLIENT flag (not server config)
+        # It controls how the client sends requests in Offline scenario
+        if self.scenario == "Offline":
+            # Add to client_config so client can use it
+            client_config['offline_back_to_back'] = self.offline_back_to_back
+            
+            if self.offline_back_to_back:
+                self.logger.info("=" * 80)
+                self.logger.info("CLIENT: OFFLINE BACK-TO-BACK MODE ENABLED")
+                self.logger.info("CLIENT: Requests will be sent individually (one per API call)")
+                self.logger.info("CLIENT: No client-side batching will be performed")
+                self.logger.info("=" * 80)
+            else:
+                self.logger.info("=" * 80)
+                self.logger.info("CLIENT: OFFLINE BATCH MODE (default)")
+                self.logger.info(f"CLIENT: Requests will be batched with batch_size={self.batch_size}")
+                self.logger.info("=" * 80)
         
         self.client = create_loadgen_client(
             scenario=self.scenario,

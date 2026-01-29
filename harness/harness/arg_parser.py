@@ -203,11 +203,18 @@ def parse_common_harness_args(args):
     if args.engine_args:
         engine_args = list(args.engine_args)
     
-    # Add offline_back_to_back to server_config so client can use it
+    # offline_back_to_back is a CLIENT flag (not server config)
+    # It controls how the client sends requests (individually vs batched)
+    offline_back_to_back = False
     if hasattr(args, 'offline_back_to_back') and args.offline_back_to_back:
-        if 'config' not in server_config:
-            server_config['config'] = {}
-        server_config['config']['offline_back_to_back'] = True
+        offline_back_to_back = True
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("=" * 80)
+        logger.info("CLIENT FLAG: --offline-back-to-back ENABLED")
+        logger.info("Client will send requests individually (one per API call)")
+        logger.info("No client-side batching will be performed")
+        logger.info("=" * 80)
     
     return {
         'model_name': args.model,
@@ -237,6 +244,7 @@ def parse_common_harness_args(args):
         'debug_mode': args.debug_mode if hasattr(args, 'debug_mode') else False,
         'print_token_stats': args.print_token_stats if hasattr(args, 'print_token_stats') else False,
         'enable_trace': args.enable_trace if hasattr(args, 'enable_trace') else False,
+        'offline_back_to_back': offline_back_to_back,  # Client flag: controls how client sends requests
         'audit_config': args.audit_config if hasattr(args, 'audit_config') else None
     }
 
