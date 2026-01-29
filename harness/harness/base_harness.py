@@ -109,6 +109,7 @@ class BaseHarness:
                  print_token_stats: bool = False,
                  enable_trace: bool = False,
                  offline_back_to_back: bool = False,
+                 offline_async_concurrency: int = 10,
                  audit_config: Optional[str] = None):
         """
         Initialize base harness.
@@ -144,6 +145,7 @@ class BaseHarness:
             print_token_stats: Print token statistics and generate histograms
             enable_trace: Enable LoadGen trace logging
             offline_back_to_back: Client flag - send requests individually instead of batching (Offline scenario only)
+            offline_async_concurrency: Max concurrent requests for async offline-back-to-back mode (default: 10)
             audit_config: Path to audit configuration file for LoadGen
         """
         # Setup logging early so we can use it in initialization
@@ -213,6 +215,7 @@ class BaseHarness:
         
         # Client flag: offline_back_to_back (controls how client sends requests, not server config)
         self.offline_back_to_back = offline_back_to_back
+        self.offline_async_concurrency = offline_async_concurrency
         
         # Audit config
         self.audit_config = audit_config
@@ -592,11 +595,17 @@ class BaseHarness:
             # Add to client_config so client can use it
             client_config['offline_back_to_back'] = self.offline_back_to_back
             
+            # Add async concurrency setting if available
+            if hasattr(self, 'offline_async_concurrency'):
+                client_config['offline_async_concurrency'] = self.offline_async_concurrency
+            
             if self.offline_back_to_back:
                 self.logger.info("=" * 80)
-                self.logger.info("CLIENT: OFFLINE BACK-TO-BACK MODE ENABLED")
+                self.logger.info("CLIENT: OFFLINE BACK-TO-BACK MODE ENABLED (ASYNC)")
                 self.logger.info("CLIENT: Requests will be sent individually (one per API call)")
-                self.logger.info("CLIENT: No client-side batching will be performed")
+                self.logger.info("CLIENT: Requests sent asynchronously, responses processed as they arrive")
+                if hasattr(self, 'offline_async_concurrency'):
+                    self.logger.info(f"CLIENT: Max concurrent requests: {self.offline_async_concurrency}")
                 self.logger.info("=" * 80)
             else:
                 self.logger.info("=" * 80)

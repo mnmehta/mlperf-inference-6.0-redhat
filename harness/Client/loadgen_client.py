@@ -17,6 +17,7 @@ import base64
 import threading
 import queue
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 from io import BytesIO
@@ -190,13 +191,19 @@ class LoadGenClient(BaseClient):
         # Offline scenario: send requests back-to-back instead of batching
         self.offline_back_to_back = config.get('offline_back_to_back', False) if config else False
         
+        # For async offline_back_to_back: max concurrent requests (default: 10)
+        # This controls how many requests are in-flight at once
+        self.offline_async_concurrency = config.get('offline_async_concurrency', 10) if config else 10
+        
         # Log offline_back_to_back status for debugging
         if self.scenario == "Offline":
             if self.offline_back_to_back:
                 self.logger.info("=" * 80)
-                self.logger.info("CLIENT: offline_back_to_back = True")
+                self.logger.info("CLIENT: offline_back_to_back = True (ASYNC MODE)")
                 self.logger.info("CLIENT: Will send requests individually (one per API call)")
-                self.logger.info("CLIENT: No client-side batching")
+                self.logger.info("CLIENT: Requests will be sent asynchronously (fire-and-forget)")
+                self.logger.info(f"CLIENT: Max concurrent requests: {self.offline_async_concurrency}")
+                self.logger.info("CLIENT: Responses will be processed as they arrive")
                 self.logger.info("=" * 80)
             else:
                 self.logger.info("=" * 80)
@@ -894,35 +901,77 @@ class LoadGenOfflineClient(LoadGenClient):
         temperature, top_k, top_p = self._get_sampling_params()
         
         if self.offline_back_to_back:
-            # Send requests back-to-back (one at a time, each as a separate API request)
+            # Send requests asynchronously (fire-and-forget, process responses as they arrive)
             self.logger.info("=" * 80)
-            self.logger.info(f"OFFLINE SCENARIO: Processing {total_samples} queries back-to-back")
+            self.logger.info(f"OFFLINE SCENARIO: Processing {total_samples} queries asynchronously")
             self.logger.info(f"Mode: Individual API requests (one prompt per request, no batching)")
             self.logger.info(f"Total samples: {total_samples}")
+            self.logger.info(f"Max concurrent requests: {self.offline_async_concurrency}")
             self.logger.info(f"offline_back_to_back flag: {self.offline_back_to_back}")
             self.logger.info("=" * 80)
             
+            if not (self.api_server_url or self.api_server_urls):
+                self.logger.warning("Local model processing not yet implemented")
+                self._send_error_responses(query_samples)
+                return
+            
+            # Use ThreadPoolExecutor for async request processing
+            # This allows us to send multiple requests concurrently and process responses as they arrive
             processed_samples = 0
-            for q_sample in query_samples:
+            completed_samples = 0
+            failed_samples = 0
+            
+            # Thread-safe counter for progress tracking
+            progress_lock = threading.Lock()
+            
+            def process_single_async(q_sample: 'lg.QuerySample') -> tuple:
+                """Process a single query asynchronously. Returns (success, q_sample.id)."""
+                nonlocal completed_samples, failed_samples
                 try:
-                    if self.api_server_url or self.api_server_urls:
-                        # Send each query as a completely separate API request
-                        # This ensures no batching occurs on the client side
-                        self._process_api_single(q_sample, temperature, top_k, top_p)
-                        processed_samples += 1
-                        if processed_samples % 100 == 0:
-                            self.logger.info(f"Processed {processed_samples}/{total_samples} samples (individual requests)")
-                    else:
-                        self.logger.warning("Local model processing not yet implemented")
-                        self._send_error_responses([q_sample])
-                        processed_samples += 1
+                    # This will block until the request completes, but we run multiple in parallel
+                    self._process_api_single(q_sample, temperature, top_k, top_p)
+                    with progress_lock:
+                        completed_samples += 1
+                        if completed_samples % 100 == 0:
+                            self.logger.info(f"Completed {completed_samples}/{total_samples} responses (async)")
+                    return (True, q_sample.id)
                 except Exception as e:
                     self.logger.error(f"Error processing query {q_sample.id}: {e}", exc_info=True)
                     self._send_error_responses([q_sample])
-                    processed_samples += 1
+                    with progress_lock:
+                        failed_samples += 1
+                    return (False, q_sample.id)
             
+            # Submit all requests to thread pool
+            start_time = time.time()
+            with ThreadPoolExecutor(max_workers=self.offline_async_concurrency) as executor:
+                # Submit all tasks
+                future_to_sample = {
+                    executor.submit(process_single_async, q_sample): q_sample 
+                    for q_sample in query_samples
+                }
+                
+                # Process futures as they complete (responses arrive)
+                # This allows us to handle responses as soon as they're ready
+                for future in as_completed(future_to_sample):
+                    q_sample = future_to_sample[future]
+                    try:
+                        success, query_id = future.result()
+                        processed_samples += 1
+                        if processed_samples % 100 == 0:
+                            elapsed = time.time() - start_time
+                            rate = processed_samples / elapsed if elapsed > 0 else 0
+                            self.logger.info(f"Submitted {processed_samples}/{total_samples} requests "
+                                           f"({rate:.1f} req/s)")
+                    except Exception as e:
+                        self.logger.error(f"Future exception for query {q_sample.id}: {e}")
+                        failed_samples += 1
+            
+            # All requests have been submitted and responses processed
+            total_time = time.time() - start_time
             self.logger.info("=" * 80)
-            self.logger.info(f"All queries completed: {processed_samples}/{total_samples} samples processed")
+            self.logger.info(f"All queries completed: {completed_samples} succeeded, {failed_samples} failed")
+            self.logger.info(f"Total time: {total_time:.2f}s, Avg rate: {total_samples/total_time:.2f} req/s")
             self.logger.info("=" * 80)
             
             # Print token histograms if enabled

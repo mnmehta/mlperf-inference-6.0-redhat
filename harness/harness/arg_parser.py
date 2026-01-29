@@ -92,7 +92,11 @@ def add_common_harness_args(parser: argparse.ArgumentParser):
     
     # Offline scenario arguments
     parser.add_argument("--offline-back-to-back", action="store_true",
-                       help="Send requests back-to-back instead of batching (Offline scenario only)")
+                       help="Send requests back-to-back instead of batching (Offline scenario only). "
+                            "Requests are sent asynchronously and responses are processed as they arrive.")
+    parser.add_argument("--offline-async-concurrency", type=int, default=10,
+                       help="Max concurrent requests for async offline-back-to-back mode (default: 10). "
+                            "Controls how many requests are in-flight at once.")
     
     # Debug arguments
     parser.add_argument("--debug-mode", action="store_true",
@@ -245,6 +249,7 @@ def parse_common_harness_args(args):
         'print_token_stats': args.print_token_stats if hasattr(args, 'print_token_stats') else False,
         'enable_trace': args.enable_trace if hasattr(args, 'enable_trace') else False,
         'offline_back_to_back': offline_back_to_back,  # Client flag: controls how client sends requests
+        'offline_async_concurrency': args.offline_async_concurrency if hasattr(args, 'offline_async_concurrency') else 10,
         'audit_config': args.audit_config if hasattr(args, 'audit_config') else None
     }
 
