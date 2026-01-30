@@ -385,12 +385,48 @@ class LoadGenClient(BaseClient):
         if not TOKENIZER_AVAILABLE:
             self.logger.warning("Transformers not available, tokenizer not initialized")
             return
-        
+
+        # Debug logging to diagnose tokenizer issues
+        import os
+        self.logger.info("=" * 80)
+        self.logger.info("TOKENIZER INITIALIZATION DEBUG")
+        self.logger.info("=" * 80)
+        self.logger.info(f"Model name: {self.model_name}")
+        self.logger.info(f"HF_HOME env var: {os.environ.get('HF_HOME', 'NOT SET')}")
+        self.logger.info(f"TRANSFORMERS_CACHE env var: {os.environ.get('TRANSFORMERS_CACHE', 'NOT SET')}")
+
+        # Check if cached tokenizer files exist
+        hf_home = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
+        cache_dir = os.path.join(hf_home, 'hub')
+        self.logger.info(f"Expected cache directory: {cache_dir}")
+        if os.path.exists(cache_dir):
+            self.logger.info(f"Cache directory exists, listing contents:")
+            try:
+                contents = os.listdir(cache_dir)
+                self.logger.info(f"  Found {len(contents)} items in cache")
+                # Show first few items
+                for item in contents[:5]:
+                    self.logger.info(f"    - {item}")
+                if len(contents) > 5:
+                    self.logger.info(f"    ... and {len(contents) - 5} more items")
+            except Exception as e:
+                self.logger.warning(f"  Could not list cache directory: {e}")
+        else:
+            self.logger.warning(f"Cache directory does NOT exist: {cache_dir}")
+
         try:
+            self.logger.info(f"Attempting to load tokenizer from: {self.model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            self.logger.info("Tokenizer initialized successfully")
+            self.logger.info("✅ Tokenizer initialized successfully!")
+            self.logger.info(f"Tokenizer vocab size: {len(self.tokenizer)}")
+            self.logger.info("=" * 80)
         except Exception as e:
-            self.logger.warning(f"Could not initialize tokenizer: {e}")
+            self.logger.error("❌ Tokenizer initialization FAILED!")
+            self.logger.error(f"Error type: {type(e).__name__}")
+            self.logger.error(f"Error message: {e}")
+            import traceback
+            self.logger.error(f"Traceback:\n{traceback.format_exc()}")
+            self.logger.info("=" * 80)
             self.tokenizer = None
     
     def _detokenize_dataset(self):
@@ -942,17 +978,28 @@ class LoadGenOfflineClient(LoadGenClient):
                 text_response = api_result.get("choices", [{}])[0].get("message", {}).get("content", "")
             else:
                 text_response = api_result.get("choices", [{}])[0].get("text", "")
-            
+
+            # Extract token count from usage field (preferred method for vLLM)
+            usage = api_result.get("usage", {})
+            completion_tokens = usage.get("completion_tokens")
+
             # Convert to token IDs
-            if self.tokenizer:
+            # Priority: use completion_tokens if available, otherwise use tokenizer
+            if completion_tokens is not None and completion_tokens > 0:
+                # Create fake token_ids with correct length (LoadGen only needs the count for performance mode)
+                token_ids = list(range(completion_tokens))
+                self.logger.debug(f"Using completion_tokens from API: {completion_tokens}")
+            elif self.tokenizer:
                 try:
                     token_ids = self.tokenizer.encode(text_response, add_special_tokens=False)
+                    self.logger.debug(f"Using tokenizer to count tokens: {len(token_ids)}")
                 except Exception as e:
                     self.logger.warning(f"Error encoding response: {e}")
                     token_ids = []
             else:
+                self.logger.warning("No token count available: API usage field missing and tokenizer not initialized")
                 token_ids = []
-            
+
             # Process response
             self._process_single_response(q_sample.id, q_sample.index, token_ids, text_response, text_prompt)
     
@@ -1086,7 +1133,7 @@ class LoadGenOfflineClient(LoadGenClient):
             choices = api_result.get("choices", [])
         
         # Process responses
-        self._process_api_responses(choices, original_query_ids, original_query_indexes, text_prompts)
+        self._process_api_responses(choices, original_query_ids, original_query_indexes, text_prompts, api_result)
     
     def _process_sglang_response(self, query_id: int, query_index: int, output_ids: List[int], output_text: str) -> None:
         """Process SGLang response (already has token IDs)."""
@@ -1374,7 +1421,7 @@ class LoadGenOfflineClient(LoadGenClient):
         lg.QuerySamplesComplete([response])
         self.logger.debug(f"Query {query_id} (index {query_index}): {token_count} tokens")
     
-    def _process_api_responses(self, choices: List[Dict], query_ids: List[int], query_indexes: List[int], text_prompts: Optional[List[str]] = None) -> None:
+    def _process_api_responses(self, choices: List[Dict], query_ids: List[int], query_indexes: List[int], text_prompts: Optional[List[str]] = None, api_result: Optional[Dict] = None) -> None:
         """Process API responses and send to Loadgen."""
         self.logger.debug(f"Processing {len(choices)} API responses for {len(query_ids)} queries")
         
@@ -1394,17 +1441,35 @@ class LoadGenOfflineClient(LoadGenClient):
             query_prompt = None
             if text_prompts and i < len(text_prompts):
                 query_prompt = text_prompts[i]
-            
+
+            # Try to extract token count from usage (vLLM may provide per-choice or aggregate)
+            # For batch requests, vLLM typically returns aggregate completion_tokens
+            # We'll divide by number of choices as approximation if only aggregate is available
+            completion_tokens_from_api = None
+            if i == 0 and api_result and "usage" in api_result:  # Only extract once for first choice
+                usage = api_result.get("usage", {})
+                total_completion_tokens = usage.get("completion_tokens")
+                if total_completion_tokens and len(choices) > 0:
+                    # Approximate tokens per choice
+                    completion_tokens_from_api = total_completion_tokens // len(choices)
+                    self.logger.debug(f"Using aggregate completion_tokens: {total_completion_tokens} total, ~{completion_tokens_from_api} per choice")
+
             # Convert back to token IDs
-            if self.tokenizer:
+            # Priority: use completion_tokens if available, otherwise use tokenizer
+            if completion_tokens_from_api is not None and completion_tokens_from_api > 0:
+                token_ids = list(range(completion_tokens_from_api))
+                self.logger.debug(f"Query {query_id}: Using completion_tokens from API: {completion_tokens_from_api}")
+            elif self.tokenizer:
                 try:
                     token_ids = self.tokenizer.encode(text_response, add_special_tokens=False)
+                    self.logger.debug(f"Query {query_id}: Using tokenizer to count tokens: {len(token_ids)}")
                 except Exception as e:
                     self.logger.warning(f"Error encoding response for query {query_id}: {e}")
-                    token_ids = [1, 2, 3]  # Fallback
+                    token_ids = []
             else:
-                token_ids = [1, 2, 3]  # Fallback
-            
+                self.logger.warning(f"Query {query_id}: No token count available")
+                token_ids = []
+
             token_count = len(token_ids)
             
             # Get input token count for logging
