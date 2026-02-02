@@ -637,8 +637,10 @@ class BaseHarness:
         if not self.enable_metrics or not METRICS_AVAILABLE:
             return
         
-        if not self.api_server_url:
-            self.logger.warning("Metrics collection requires API server URL")
+        # Check for API server URL (either single URL or multiple URLs for load balancing)
+        has_api_url = bool(self.api_server_url or getattr(self, 'api_server_urls', None))
+        if not has_api_url:
+            self.logger.warning("Metrics collection requires API server URL (--api-server-url or --api-server-urls)")
             return
         
         try:
@@ -682,8 +684,14 @@ class BaseHarness:
             else:
                 storage = JSONStorage(str(metrics_file).replace('.csv', '.json'))
             
+            # Determine metrics endpoint - use first URL if multiple URLs are provided
+            metrics_endpoint_url = self.api_server_url
+            if not metrics_endpoint_url and hasattr(self, 'api_server_urls') and self.api_server_urls:
+                metrics_endpoint_url = self.api_server_urls[0]
+                self.logger.info(f"Using first API server URL for metrics: {metrics_endpoint_url}")
+            
             self.metrics_collector = VLLMMetricsCollector(
-                metrics_endpoint=f"{self.api_server_url}/metrics",
+                metrics_endpoint=f"{metrics_endpoint_url}/metrics",
                 storage=storage,
                 metrics_to_collect=metrics_to_collect,
                 collection_interval=self.metrics_interval,
@@ -696,28 +704,31 @@ class BaseHarness:
             self.metrics_backend = backend  # Store backend for visualization
             self.logger.info(f"Metrics collection initialized: {metrics_file}")
             self.logger.info(f"Collecting {len(metrics_to_collect)} metrics for {backend} backend")
+            self.logger.info(f"Metrics endpoint: {metrics_endpoint_url}/metrics")
+            self.logger.info(f"Collection interval: {self.metrics_interval} seconds")
             
         except Exception as e:
             self.logger.error(f"Failed to initialize metrics: {e}")
             self.enable_metrics = False
     
-    def setup_loadgen_settings(self, user_conf: str, lg_model_name: str):
+    def setup_loadgen_settings(self, user_conf: str, lg_model_name: str, mlperf_conf: str = None):
         """
         Setup LoadGen TestSettings.
         
         LoadGen configuration flow:
-        1. mlperf.conf: Base/reference configuration (internal to LoadGen library)
-        2. user.conf: User-specific overrides and model configurations
+        1. mlperf.conf: Base/reference configuration (default: ../loadgen/mlperf.conf or internal LoadGen library)
+        2. user.conf: User-specific overrides and model configurations (only if --user-conf is specified)
         3. lg_model_name: Model name used to look up model-specific settings in both configs
         
         The settings.FromConfig() method:
-        - Loads base settings from mlperf.conf (internal LoadGen config)
-        - Applies user-specific overrides from user.conf
+        - Loads base settings from mlperf.conf (conf_type=2)
+        - Applies user-specific overrides from user.conf (conf_type=1, if provided)
         - Uses lg_model_name to find model-specific sections (e.g., "gpt_oss_120b", "llama3_1-8b")
         
         Args:
-            user_conf: User configuration file path (e.g., "user.conf")
+            user_conf: User configuration file path (e.g., "user.conf") or None if not specified
             lg_model_name: Model name for LoadGen config lookup (e.g., "gpt_oss_120b", "llama3_1-8b")
+            mlperf_conf: MLPerf config file path (default: ../loadgen/mlperf.conf)
         
         Returns:
             Configured TestSettings object
@@ -725,11 +736,15 @@ class BaseHarness:
         self.logger.info("=" * 80)
         self.logger.info("SETTING UP LOADGEN TEST SETTINGS")
         self.logger.info("=" * 80)
-        self.logger.info(f"User config file: {user_conf}")
+        self.logger.info(f"MLPerf config file: {mlperf_conf if mlperf_conf else 'Using LoadGen internal defaults'}")
+        self.logger.info(f"User config file: {user_conf if user_conf else 'Not specified (using mlperf.conf only)'}")
         self.logger.info(f"LoadGen model name: {lg_model_name}")
         self.logger.info(f"Scenario: {self.scenario}")
         self.logger.info(f"Test mode: {self.test_mode}")
-        self.logger.info(f"Note: LoadGen uses mlperf.conf (base) + {user_conf} (overrides) with model '{lg_model_name}'")
+        if user_conf:
+            self.logger.info(f"Note: LoadGen uses {mlperf_conf or 'internal mlperf.conf'} (base) + {user_conf} (overrides) with model '{lg_model_name}'")
+        else:
+            self.logger.info(f"Note: LoadGen uses {mlperf_conf or 'internal mlperf.conf'} (base) only with model '{lg_model_name}'")
         
         settings = lg.TestSettings()
         
@@ -747,10 +762,26 @@ class BaseHarness:
         
         settings.use_token_latencies = True
         
-        self.logger.info(f"Loading LoadGen settings from config: {user_conf}, model: {lg_model_name}")
-        # FromConfig loads: mlperf.conf (base) + user.conf (overrides) for model lg_model_name
-        settings.FromConfig(user_conf, lg_model_name, self.scenario, 1)
-        self.logger.info("LoadGen settings loaded successfully")
+        # Load mlperf.conf first (conf_type=2) - always use the provided path (default or specified)
+        if mlperf_conf:
+            from pathlib import Path
+            mlperf_path = Path(mlperf_conf)
+            if mlperf_path.exists():
+                self.logger.info(f"Loading MLPerf config from: {mlperf_conf}, model: {lg_model_name}")
+                # conf_type: 2 = mlperf.conf
+                settings.FromConfig(str(mlperf_path), lg_model_name, self.scenario, 2)
+                self.logger.info("MLPerf config loaded successfully")
+            else:
+                self.logger.warning(f"MLPerf config file not found: {mlperf_conf}, using LoadGen internal defaults")
+        
+        # Load user.conf if it was explicitly specified (conf_type=1)
+        if user_conf:
+            self.logger.info(f"Loading user config from: {user_conf}, model: {lg_model_name}")
+            # conf_type: 1 = user.conf
+            settings.FromConfig(user_conf, lg_model_name, self.scenario, 1)
+            self.logger.info("User config loaded successfully")
+        else:
+            self.logger.info("User config not specified, using mlperf.conf defaults only")
         self.logger.info("=" * 80)
         
         # For offline scenario, ensure samples_per_query is set to process all samples
@@ -1023,7 +1054,7 @@ class BaseHarness:
         """LoadGen callback - no action needed."""
         pass
     
-    def run(self, user_conf: str = "user.conf", lg_model_name: str = "default") -> Dict[str, Any]:
+    def run(self, user_conf: str = "user.conf", lg_model_name: str = "default", mlperf_conf: str = None) -> Dict[str, Any]:
         """
         Run the harness test.
         
@@ -1108,32 +1139,56 @@ class BaseHarness:
                 if self.metrics_collector:
                     try:
                         # Wait a moment for server to be fully ready
-                        if not self.api_server_url:
+                        if not self.api_server_url and not getattr(self, 'api_server_urls', None):
                             # Server was just started, wait for it to be ready
                             time.sleep(2)
                         
-                        # Verify metrics endpoint is accessible
-                        metrics_url = f"{self.api_server_url}/metrics"
-                        self.logger.info(f"Verifying metrics endpoint: {metrics_url}")
-                        try:
-                            import requests
-                            response = requests.get(metrics_url, timeout=5)
-                            if response.status_code == 200:
-                                self.logger.info(f"Metrics endpoint is accessible (status: {response.status_code})")
-                            else:
-                                self.logger.warning(f"Metrics endpoint returned status {response.status_code}")
-                        except Exception as e:
-                            self.logger.warning(f"Could not verify metrics endpoint: {e}")
-                            self.logger.warning("Metrics collection may not work. Continuing anyway...")
+                        # Determine metrics endpoint URL for verification
+                        metrics_endpoint_url = self.api_server_url
+                        if not metrics_endpoint_url and hasattr(self, 'api_server_urls') and self.api_server_urls:
+                            metrics_endpoint_url = self.api_server_urls[0]
                         
+                        # Verify metrics endpoint is accessible
+                        if metrics_endpoint_url:
+                            metrics_url = f"{metrics_endpoint_url}/metrics"
+                            self.logger.info(f"Verifying metrics endpoint: {metrics_url}")
+                            try:
+                                import requests
+                                response = requests.get(metrics_url, timeout=5)
+                                if response.status_code == 200:
+                                    self.logger.info(f"Metrics endpoint is accessible (status: {response.status_code})")
+                                else:
+                                    self.logger.warning(f"Metrics endpoint returned status {response.status_code}")
+                            except Exception as e:
+                                self.logger.warning(f"Could not verify metrics endpoint: {e}")
+                                self.logger.warning("Metrics collection may not work. Continuing anyway...")
+                        
+                        # Start metrics collection thread
+                        self.logger.info("=" * 80)
+                        self.logger.info("STARTING METRICS COLLECTION THREAD")
+                        self.logger.info("=" * 80)
                         self.metrics_collector.start()
-                        self.logger.info("Metrics collection started")
+                        
+                        # Verify thread was created
+                        if self.metrics_collector.thread:
+                            self.logger.info(f"Metrics collection thread created successfully (thread ID: {self.metrics_collector.thread.ident})")
+                            self.logger.info(f"Thread is alive: {self.metrics_collector.thread.is_alive()}")
+                            self.logger.info(f"Collection interval: {self.metrics_collector.collection_interval} seconds")
+                        else:
+                            self.logger.error("Metrics collection thread was NOT created!")
+                            self.enable_metrics = False
+                            return
+                        
+                        self.logger.info("Metrics collection thread started successfully")
+                        self.logger.info("=" * 80)
                     except Exception as e:
                         self.logger.error(f"Failed to start metrics collection: {e}", exc_info=True)
                         self.enable_metrics = False
+                else:
+                    self.logger.warning("Metrics collector was not initialized - metrics collection will not run")
             
             # Setup LoadGen settings
-            settings = self.setup_loadgen_settings(user_conf, lg_model_name)
+            settings = self.setup_loadgen_settings(user_conf, lg_model_name, mlperf_conf)
             if self.scenario == "Server":
                 # Only set server_target_qps if it's not None
                 if self.server_target_qps is not None:
@@ -1184,6 +1239,12 @@ class BaseHarness:
             log_settings = lg.LogSettings()
             log_settings.log_output = log_output_settings
             log_settings.enable_trace = self.enable_trace
+            
+            if self.enable_trace:
+                self.logger.info("=" * 80)
+                self.logger.info("LOADGEN TRACE LOGGING ENABLED")
+                self.logger.info("Trace logging will generate detailed LoadGen execution logs")
+                self.logger.info("=" * 80)
             
             self.logger.info(f"MLPerf LoadGen output directory: {self.mlperf_output_dir}")
             

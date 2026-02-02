@@ -54,19 +54,20 @@ class Llama2_70BHarness(BaseHarness):
         
         self.logger.info("Llama 2 70B harness initialized")
     
-    def run(self, user_conf: str = "user.conf", lg_model_name: str = "llama2_70b") -> Dict[str, Any]:
+    def run(self, user_conf: str = "user.conf", lg_model_name: str = "llama2_70b", mlperf_conf: str = None) -> Dict[str, Any]:
         """
         Run the harness test.
         
         Args:
             user_conf: User configuration file for LoadGen
             lg_model_name: Model name for LoadGen
+            mlperf_conf: MLPerf config file path (default: ../loadgen/mlperf.conf)
         
         Returns:
             Dictionary with test results
         """
         # Use parent's run method which handles everything
-        return super().run(user_conf=user_conf, lg_model_name=lg_model_name)
+        return super().run(user_conf=user_conf, lg_model_name=lg_model_name, mlperf_conf=mlperf_conf)
     
     # Use parent's _get_mlflow_parameters and _upload_to_mlflow methods
 

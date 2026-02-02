@@ -44,6 +44,8 @@ def add_common_harness_args(parser: argparse.ArgumentParser):
     parser.add_argument("--num-samples", type=int, default=13368, help="Number of samples")
     parser.add_argument("--output-dir", type=str, default="./harness_output", help="Output directory")
     parser.add_argument("--enable-metrics", action="store_true", help="Enable metrics collection")
+    parser.add_argument("--metrics-interval", type=int, default=15,
+                       help="Metrics collection interval in seconds (default: 15)")
     parser.add_argument("--server-config", type=str, default=None, help="Server config YAML file")
     parser.add_argument("--user-conf", type=str, default="user.conf", help="LoadGen user config")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
@@ -234,6 +236,7 @@ def parse_common_harness_args(args):
         'num_samples': args.num_samples,
         'output_dir': args.output_dir,
         'enable_metrics': args.enable_metrics,
+        'metrics_interval': args.metrics_interval if hasattr(args, 'metrics_interval') else 15,
         'mlflow_tracking_uri': mlflow_tracking_uri,
         'mlflow_experiment_name': args.mlflow_experiment_name,
         'mlflow_output_dir': args.mlflow_output_dir,

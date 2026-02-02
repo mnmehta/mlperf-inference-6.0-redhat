@@ -325,6 +325,8 @@ Examples:
     
     # Add LoadGen configuration
     loadgen_group = parser.add_argument_group('LoadGen Configuration')
+    loadgen_group.add_argument("--mlperf-conf", type=str, default="../loadgen/mlperf.conf",
+                               help="Path to MLPerf config file (default: ../loadgen/mlperf.conf)")
     loadgen_group.add_argument("--lg-model-name", type=str, default=None,
                                help="LoadGen model name for config lookup (e.g., llama3_1-8b, llama2_70b, deepseek_r1). "
                                     "If not provided, will be auto-detected from model category")
@@ -410,7 +412,22 @@ Examples:
         logger.warning(f"Failed to write command line to file: {e}")
     
     # Determine user_conf and lg_model_name
-    user_conf = args.user_conf if hasattr(args, 'user_conf') else "user.conf"
+    # Only use user_conf if explicitly specified via --user-conf
+    # Check if --user-conf was explicitly provided in command line arguments
+    user_conf = None
+    if hasattr(args, 'user_conf'):
+        # Check if --user-conf was explicitly provided in command line
+        # We need to check sys.argv because argparse always sets the default value
+        # Look for exact match of --user-conf argument
+        for i, arg in enumerate(sys.argv):
+            if arg == '--user-conf' or arg.startswith('--user-conf='):
+                # User explicitly provided --user-conf
+                user_conf = args.user_conf
+                logger.info(f"User config explicitly specified: {user_conf}")
+                break
+        if user_conf is None:
+            logger.info("User config not specified, will use mlperf.conf defaults only")
+    
     lg_model_name = args.lg_model_name if hasattr(args, 'lg_model_name') and args.lg_model_name else None
     
     # If no lg_model_name provided, resolve from various sources
@@ -424,8 +441,12 @@ Examples:
     else:
         logger.info(f"Using provided LoadGen model name: {lg_model_name}")
     
-    # Run harness
-    results = harness.run(user_conf=user_conf, lg_model_name=lg_model_name)
+    # Get mlperf_conf path (argparse will use default "../loadgen/mlperf.conf" if not specified)
+    mlperf_conf = args.mlperf_conf if hasattr(args, 'mlperf_conf') else "../loadgen/mlperf.conf"
+    logger.info(f"Using MLPerf config: {mlperf_conf}")
+    
+    # Run harness (pass None if user_conf was not explicitly specified)
+    results = harness.run(user_conf=user_conf, lg_model_name=lg_model_name, mlperf_conf=mlperf_conf)
     
     if results['status'] == 'success':
         print("\n✓ Harness test completed successfully!")
