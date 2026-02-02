@@ -925,22 +925,22 @@ class LoadGenOfflineClient(LoadGenClient):
             progress_lock = threading.Lock()
             
             def process_single_async(q_sample: 'lg.QuerySample') -> tuple:
-                """Process a single query asynchronously. Returns (success, q_sample.id)."""
+                """Process a single query asynchronously. Returns (success, q_sample, response_data)."""
                 nonlocal completed_samples, failed_samples
                 try:
                     # This will block until the request completes, but we run multiple in parallel
-                    self._process_api_single(q_sample, temperature, top_k, top_p)
+                    # Get response data from worker thread without calling LoadGen callback
+                    response_data = self._process_api_single(q_sample, temperature, top_k, top_p)
                     with progress_lock:
                         completed_samples += 1
                         if completed_samples % 100 == 0:
                             self.logger.info(f"Completed {completed_samples}/{total_samples} responses (async)")
-                    return (True, q_sample.id)
+                    return (True, q_sample, response_data)
                 except Exception as e:
                     self.logger.error(f"Error processing query {q_sample.id}: {e}", exc_info=True)
-                    self._send_error_responses([q_sample])
                     with progress_lock:
                         failed_samples += 1
-                    return (False, q_sample.id)
+                    return (False, q_sample, None)
             
             # Submit all requests to thread pool
             start_time = time.time()
@@ -953,18 +953,45 @@ class LoadGenOfflineClient(LoadGenClient):
                 
                 # Process futures as they complete (responses arrive)
                 # This allows us to handle responses as soon as they're ready
+                # IMPORTANT: Call lg.QuerySamplesComplete from main thread only
                 for future in as_completed(future_to_sample):
                     q_sample = future_to_sample[future]
                     try:
-                        success, query_id = future.result()
+                        success, q_sample_result, response_data = future.result()
+
+                        if success and response_data is not None:
+                            # Call LoadGen callback from main thread (thread-safe)
+                            query_id = response_data['query_id']
+                            output_data_ptr = response_data['output_data_ptr']
+                            output_data_size = response_data['output_data_size']
+                            n_tokens = response_data['n_tokens']
+
+                            # Create response for LoadGen
+                            response_array = [
+                                lg.QuerySampleResponse(
+                                    query_id,
+                                    output_data_ptr,
+                                    output_data_size,
+                                    n_tokens
+                                )
+                            ]
+
+                            # Report completion to LoadGen from main thread
+                            lg.QuerySamplesComplete(response_array)
+                            self.logger.debug(f"Query {query_id}: {n_tokens} tokens")
+                        else:
+                            # Send error response from main thread
+                            self._send_error_responses([q_sample_result])
+
                         processed_samples += 1
                         if processed_samples % 100 == 0:
                             elapsed = time.time() - start_time
                             rate = processed_samples / elapsed if elapsed > 0 else 0
-                            self.logger.info(f"Submitted {processed_samples}/{total_samples} requests "
+                            self.logger.info(f"Processed {processed_samples}/{total_samples} requests "
                                            f"({rate:.1f} req/s)")
                     except Exception as e:
                         self.logger.error(f"Future exception for query {q_sample.id}: {e}")
+                        self._send_error_responses([q_sample])
                         failed_samples += 1
             
             # All requests have been submitted and responses processed
@@ -1021,12 +1048,15 @@ class LoadGenOfflineClient(LoadGenClient):
             if self.print_token_stats or self.debug_mode:
                 self._print_token_histograms()
     
-    def _process_api_single(self, q_sample: 'lg.QuerySample', temperature: float, top_k: int, top_p: float) -> None:
+    def _process_api_single(self, q_sample: 'lg.QuerySample', temperature: float, top_k: int, top_p: float) -> Dict[str, Any]:
         """
         Process a single query via API (for back-to-back mode).
-        
+
         This method sends ONE prompt in ONE API request - no batching.
         Each call to this method results in a separate HTTP request to the API server.
+
+        Returns:
+            Dictionary with response data for LoadGen (query_id, output_data_ptr, output_data_size, n_tokens)
         """
         # Log that we're processing a single request (not a batch)
         self.logger.debug(f"[BACK-TO-BACK MODE] Processing single query {q_sample.id} (index {q_sample.index}) - individual API request")
@@ -1052,13 +1082,13 @@ class LoadGenOfflineClient(LoadGenClient):
             
             self.logger.debug(f"Sending SGLang request to {endpoint} for query {q_sample.id}")
             response = self._send_request_with_retry(endpoint, api_payload, server_url)
-            
+
             api_result = response.json()
             output_ids = api_result.get("output_ids", [])
             output_text = api_result.get("text", "")
-            
-            # Process response
-            self._process_sglang_response(q_sample.id, q_sample.index, output_ids, output_text)
+
+            # Process response and return data (don't call LoadGen callback)
+            return self._process_sglang_response(q_sample.id, q_sample.index, output_ids, output_text)
         else:
             # Standard format: use text_input directly if available (e.g., for gpt-oss-120b with vLLM)
             # Otherwise decode from input_ids
@@ -1123,9 +1153,9 @@ class LoadGenOfflineClient(LoadGenClient):
                     token_ids = []
             else:
                 token_ids = []
-            
-            # Process response
-            self._process_single_response(q_sample.id, q_sample.index, token_ids, text_response, text_prompt)
+
+            # Process response and return data (don't call LoadGen callback)
+            return self._process_single_response(q_sample.id, q_sample.index, token_ids, text_response, text_prompt)
     
     def _process_api_batch(self, batch: List['lg.QuerySample'], temperature: float, top_k: int, top_p: float) -> None:
         """Process a batch via API."""
@@ -1135,8 +1165,20 @@ class LoadGenOfflineClient(LoadGenClient):
         # Check if using SGLang with input_ids
         if self.use_input_ids:
             # SGLang format: send each request individually (SGLang handles batching internally)
+            # In batch mode (non-async), we call LoadGen immediately from this thread (safe)
             for q_sample in batch:
-                self._process_api_single(q_sample, temperature, top_k, top_p)
+                response_data = self._process_api_single(q_sample, temperature, top_k, top_p)
+                if response_data:
+                    # Create and send LoadGen response
+                    response_array = [
+                        lg.QuerySampleResponse(
+                            response_data['query_id'],
+                            response_data['output_data_ptr'],
+                            response_data['output_data_size'],
+                            response_data['n_tokens']
+                        )
+                    ]
+                    lg.QuerySamplesComplete(response_array)
             return
         
         # Standard format: prepare text prompts
@@ -1252,8 +1294,12 @@ class LoadGenOfflineClient(LoadGenClient):
         # Process responses
         self._process_api_responses(choices, original_query_ids, original_query_indexes, text_prompts)
     
-    def _process_sglang_response(self, query_id: int, query_index: int, output_ids: List[int], output_text: str) -> None:
-        """Process SGLang response (already has token IDs)."""
+    def _process_sglang_response(self, query_id: int, query_index: int, output_ids: List[int], output_text: str) -> Dict[str, Any]:
+        """Process SGLang response (already has token IDs).
+
+        Returns:
+            Dictionary with response data for LoadGen (query_id, output_data_ptr, output_data_size, n_tokens)
+        """
         token_count = len(output_ids)
         
         # Get input token count for logging
@@ -1320,23 +1366,21 @@ class LoadGenOfflineClient(LoadGenClient):
             output_data_ptr = 0
             output_data_size = 0
             n_tokens = 0
-        
-        # Create response for LoadGen with token count
-        response_array = [
-            lg.QuerySampleResponse(
-                query_id,
-                output_data_ptr,
-                output_data_size,
-                n_tokens  # Number of output tokens for tokens/sec metric
-            )
-        ]
-        
-        # Report completion to LoadGen
-        lg.QuerySamplesComplete(response_array)
-        self.logger.debug(f"Query {query_id} (index {query_index}): {n_tokens} tokens")
+
+        # Return response data for LoadGen (caller will invoke lg.QuerySamplesComplete from main thread)
+        return {
+            'query_id': query_id,
+            'output_data_ptr': output_data_ptr,
+            'output_data_size': output_data_size,
+            'n_tokens': n_tokens
+        }
     
-    def _process_single_response(self, query_id: int, query_index: int, token_ids: List[int], text_response: str, text_prompt: Optional[str] = None) -> None:
-        """Process a single response."""
+    def _process_single_response(self, query_id: int, query_index: int, token_ids: List[int], text_response: str, text_prompt: Optional[str] = None) -> Dict[str, Any]:
+        """Process a single response.
+
+        Returns:
+            Dictionary with response data for LoadGen (query_id, output_data_ptr, output_data_size, n_tokens)
+        """
         token_count = len(token_ids)
         
         # Get input token count for logging
@@ -1389,20 +1433,14 @@ class LoadGenOfflineClient(LoadGenClient):
             output_data_ptr = 0
             output_data_size = 0
             n_tokens = 0
-        
-        # Create response for LoadGen with token count
-        response_array = [
-            lg.QuerySampleResponse(
-                query_id,
-                output_data_ptr,
-                output_data_size,
-                n_tokens  # Number of output tokens for tokens/sec metric
-            )
-        ]
-        
-        # Report completion to LoadGen
-        lg.QuerySamplesComplete(response_array)
-        self.logger.debug(f"Query {query_id} (index {query_index}): {n_tokens} tokens")
+
+        # Return response data for LoadGen (caller will invoke lg.QuerySamplesComplete from main thread)
+        return {
+            'query_id': query_id,
+            'output_data_ptr': output_data_ptr,
+            'output_data_size': output_data_size,
+            'n_tokens': n_tokens
+        }
     
     def _process_api_responses(self, choices: List[Dict], query_ids: List[int], query_indexes: List[int], text_prompts: Optional[List[str]] = None) -> None:
         """Process API responses and send to Loadgen."""
