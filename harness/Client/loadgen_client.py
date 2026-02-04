@@ -161,6 +161,9 @@ class LoadGenClient(BaseClient):
             self.accuracy_temperature = config.get('accuracy_temperature', 1.0) if config else 1.0
             self.accuracy_top_k = config.get('accuracy_top_k', -1) if config else -1
             self.accuracy_top_p = config.get('accuracy_top_p', 1.0) if config else 1.0
+            self.logger.debug(f"GPT-OSS model detected - Sampling parameters initialized:")
+            self.logger.debug(f"  Performance mode: temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}")
+            self.logger.debug(f"  Accuracy mode: temperature={self.accuracy_temperature}, top_k={self.accuracy_top_k}, top_p={self.accuracy_top_p}")
         else:
             # Default behavior for other models
             self.temperature = config.get('temperature', 0.0) if config else 0.0
@@ -170,6 +173,12 @@ class LoadGenClient(BaseClient):
             self.accuracy_temperature = config.get('accuracy_temperature', None) if config else None
             self.accuracy_top_k = config.get('accuracy_top_k', None) if config else None
             self.accuracy_top_p = config.get('accuracy_top_p', None) if config else None
+            self.logger.debug(f"Sampling parameters initialized:")
+            self.logger.debug(f"  Performance mode: temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}")
+            if self.accuracy_temperature is not None or self.accuracy_top_k is not None or self.accuracy_top_p is not None:
+                self.logger.debug(f"  Accuracy mode overrides: temperature={self.accuracy_temperature}, top_k={self.accuracy_top_k}, top_p={self.accuracy_top_p}")
+            else:
+                self.logger.debug(f"  Accuracy mode: using performance mode parameters")
         
         # SGLang-specific: use input_ids directly instead of text
         # Auto-detect SGLang backend from server_config
@@ -782,10 +791,12 @@ class LoadGenClient(BaseClient):
             temperature = self.accuracy_temperature if self.accuracy_temperature is not None else self.temperature
             top_k = self.accuracy_top_k if self.accuracy_top_k is not None else self.top_k
             top_p = self.accuracy_top_p if self.accuracy_top_p is not None else self.top_p
+            self.logger.debug(f"_get_sampling_params() - Accuracy mode: temperature={temperature}, top_k={top_k}, top_p={top_p}")
         else:
             temperature = self.temperature
             top_k = self.top_k
             top_p = self.top_p
+            self.logger.debug(f"_get_sampling_params() - Performance mode: temperature={temperature}, top_k={top_k}, top_p={top_p}")
         return temperature, top_k, top_p
     
     def _print_sampling_summary(self):
@@ -1097,14 +1108,23 @@ class LoadGenOfflineClient(LoadGenClient):
                 self.dataset.input[q_sample.index]):
                 # Use text_input directly (no detokenization needed)
                 text_prompt = self.dataset.input[q_sample.index]
+                self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id} (index {q_sample.index}): Using text_input directly from dataset")
             elif self.tokenizer:
                 try:
                     text_prompt = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+                    self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id} (index {q_sample.index}): Decoded from input_ids using tokenizer (length: {len(text_prompt)} chars)")
                 except Exception as e:
-                    self.logger.warning(f"Error decoding tokens: {e}")
+                    self.logger.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
                     text_prompt = " ".join([str(t) for t in input_ids])
+                    self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id}: Fallback to string representation of input_ids")
             else:
                 text_prompt = " ".join([str(t) for t in input_ids])
+                self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id}: No tokenizer available, using string representation of input_ids")
+            
+            # Log the text prompt (first 200 chars) for debugging
+            text_preview = text_prompt[:200] + "..." if len(text_prompt) > 200 else text_prompt
+            self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id}: Text prompt preview: {text_preview}")
+            self.logger.debug(f"LoadGenOfflineClient._process_api_single() - Query {q_sample.id}: Full text prompt length: {len(text_prompt)} chars, input_ids length: {len(input_ids)} tokens")
             
             # Get server URL (with load balancing if enabled)
             server_url = self._get_next_server_url()
@@ -1199,16 +1219,28 @@ class LoadGenOfflineClient(LoadGenClient):
                 len(self.dataset.input) > q_sample.index and 
                 self.dataset.input[q_sample.index]):
                 # Use text_input directly (no detokenization needed)
-                text_prompts.append(self.dataset.input[q_sample.index])
+                text_prompt = self.dataset.input[q_sample.index]
+                text_prompts.append(text_prompt)
+                self.logger.debug(f"LoadGenOfflineClient._process_api_batch() - Query {q_sample.id} (index {q_sample.index}): Using text_input directly from dataset (length: {len(text_prompt)} chars)")
             elif self.tokenizer:
                 try:
                     text_prompt = self.tokenizer.decode(input_ids, skip_special_tokens=True)
                     text_prompts.append(text_prompt)
+                    self.logger.debug(f"LoadGenOfflineClient._process_api_batch() - Query {q_sample.id} (index {q_sample.index}): Decoded from input_ids using tokenizer (length: {len(text_prompt)} chars)")
                 except Exception as e:
-                    self.logger.warning(f"Error decoding tokens: {e}")
-                    text_prompts.append(" ".join([str(t) for t in input_ids]))
+                    self.logger.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
+                    text_prompt = " ".join([str(t) for t in input_ids])
+                    text_prompts.append(text_prompt)
+                    self.logger.debug(f"LoadGenOfflineClient._process_api_batch() - Query {q_sample.id}: Fallback to string representation of input_ids")
             else:
-                text_prompts.append(" ".join([str(t) for t in input_ids]))
+                text_prompt = " ".join([str(t) for t in input_ids])
+                text_prompts.append(text_prompt)
+                self.logger.debug(f"LoadGenOfflineClient._process_api_batch() - Query {q_sample.id}: No tokenizer available, using string representation of input_ids")
+            
+            # Log first prompt in batch for debugging (to avoid too much output)
+            if q_sample.index == batch[0].index:
+                text_preview = text_prompt[:200] + "..." if len(text_prompt) > 200 else text_prompt
+                self.logger.debug(f"LoadGenOfflineClient._process_api_batch() - First prompt in batch (query {q_sample.id}): {text_preview}")
         
         self.logger.debug(f"Prepared {len(text_prompts)} prompts for API batch")
         
@@ -1346,6 +1378,7 @@ class LoadGenOfflineClient(LoadGenClient):
                 self.logger.info(f"[DEBUG] Query {query_id} (index {query_index}):")
                 if prompt_text:
                     self.logger.info(f"  Prompt: {prompt_preview}")
+                self.logger.debug(f"  Text : {prompt_text}")
                 self.logger.info(f"  Text Response: {text_preview}")
                 self.logger.info(f"  Input Tokens: {input_token_count}")
                 self.logger.info(f"  Output Tokens: {token_count}")
@@ -1632,27 +1665,46 @@ class LoadGenServerClient(LoadGenClient):
                 # Get input IDs from dataset
                 input_ids_tensor = self.dataset.input_ids[qitem.index]
                 
-                # Process query asynchronously
+                # Process query asynchronously (pass both input_ids, query_id, and index)
                 threading.Thread(
                     target=self._async_process_query,
-                    args=(input_ids_tensor, qitem.id),
+                    args=(input_ids_tensor, qitem.id, qitem.index),
                     daemon=True
                 ).start()
                 
             except Exception as e:
                 self.logger.error(f"Error in query worker: {e}")
     
-    def _async_process_query(self, input_ids_tensor: List[int], query_id: int):
+    def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int):
         """Process a single query asynchronously via streaming API."""
         try:
             # Get input token count for tracking
             input_token_count = len(input_ids_tensor)
             
-            # Decode input IDs to text
-            if self.tokenizer:
-                decoded = self.tokenizer.decode(input_ids_tensor, skip_special_tokens=True)
+            # Use text_input directly if available (same logic as LoadGenOfflineClient)
+            # Otherwise decode from input_ids
+            if (hasattr(self.dataset, 'input') and 
+                len(self.dataset.input) > query_index and 
+                self.dataset.input[query_index]):
+                # Use text_input directly (no detokenization needed)
+                decoded = self.dataset.input[query_index]
+                self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Using text_input directly from dataset (length: {len(decoded)} chars)")
+            elif self.tokenizer:
+                try:
+                    decoded = self.tokenizer.decode(input_ids_tensor, skip_special_tokens=True)
+                    self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Decoded from input_ids using tokenizer (length: {len(decoded)} chars)")
+                except Exception as e:
+                    self.logger.warning(f"Error decoding tokens for query {query_id}: {e}")
+                    decoded = " ".join([str(t) for t in input_ids_tensor])
+                    self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id}: Fallback to string representation of input_ids")
             else:
                 decoded = " ".join([str(t) for t in input_ids_tensor])
+                self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id}: No tokenizer available, using string representation of input_ids")
+            
+            # Log the decoded text (first 200 chars) for debugging
+            text_preview = decoded[:200] + "..." if len(decoded) > 200 else decoded
+            self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Decoded text preview: {text_preview}")
+            self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Full decoded text length: {len(decoded)} chars, input_ids length: {len(input_ids_tensor)} tokens")
             
             # Process via streaming API
             response_ids = [query_id]
@@ -1695,6 +1747,16 @@ class LoadGenServerClient(LoadGenClient):
             'Content-Type': 'application/json',
         }
         
+        # Get sampling parameters based on test_mode
+        temperature, top_k, top_p = self._get_sampling_params()
+        
+        # Log sampling parameters in debug mode
+        self.logger.debug(f"LoadGenServerClient._stream_api_vllm() - Sampling parameters:")
+        self.logger.debug(f"  test_mode: {self.test_mode}")
+        self.logger.debug(f"  temperature: {temperature}")
+        self.logger.debug(f"  top_k: {top_k}")
+        self.logger.debug(f"  top_p: {top_p}")
+        
         # Get server URL (with load balancing if enabled)
         server_url = self._get_next_server_url()
         endpoints = self._get_endpoints_for_url(server_url)
@@ -1706,11 +1768,15 @@ class LoadGenServerClient(LoadGenClient):
                 'model': self.model_name,
                 'messages': [{"role": "user", "content": input_text}],
                 'max_tokens': self.max_tokens,
-                'temperature': 0.0,
+                'temperature': temperature,
                 'stream': True,
-                'top_p': 1.0,
-                'seed': 42
+                'top_p': top_p,
+                'top_k': -1,
             }
+            # Add top_k if it's not -1 (which means consider all tokens)
+            # Note: top_k should be an integer, not float
+            if top_k != -1 and top_k > 0:
+                json_data['top_k'] = int(top_k)
         else:
             endpoint_url = endpoints['completions']
             json_data = {
@@ -1718,12 +1784,15 @@ class LoadGenServerClient(LoadGenClient):
                 'prompt': input_text,
                 'max_tokens': self.max_tokens,
                 'min_tokens': 1,
-                'temperature': 0.0,
+                'temperature': temperature,
                 'stream': True,
-                'top_p': 1.0,
-                'top_k': 1.0,
-                'seed': 42
+                'top_p': top_p,
+                'top_k': -1,
             }
+        
+        # Log the JSON payload being sent (in debug mode)
+        self.logger.debug(f"LoadGenServerClient._stream_api_vllm() - Sending request to {endpoint_url} self.input_text: {input_text}")
+        self.logger.debug(f"  JSON payload: {json.dumps(json_data, indent=2)}")
         
         token_s_cache = []
         first = True
