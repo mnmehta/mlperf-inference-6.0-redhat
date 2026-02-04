@@ -10,7 +10,8 @@ model_specific:
   # Note: GPT-OSS-120B uses different datasets for performance and accuracy evaluation
   # Performance dataset: perf_eval_ref.parquet (6396 samples)
   # Accuracy dataset: acc_eval_ref.parquet (4395 samples)
-  # Both datasets have:
+  # Compliance dataset: acc_eval_compliance_gpqa.parquet (990 samples, for TEST07 compliance)
+  # All datasets have:
   #   - input_tokens: tokenized input IDs (used by SGLang)
   #   - text_input: text input (used by vLLM, no detokenization needed)
   #   - ref_output: reference output for evaluation
