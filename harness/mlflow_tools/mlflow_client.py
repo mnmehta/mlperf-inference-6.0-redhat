@@ -664,8 +664,13 @@ class MLflowClient:
                 self.logger.warning(f"MLPerf log summary not found at: {summary_file}")
             
             if include_subdirs:
-                # Upload entire directory structure
+                # Upload entire directory structure recursively (includes all subdirectories
+                # such as compliance folders like TEST07, TEST09, etc.)
                 mlflow.log_artifacts(str(upload_dir), "output")
+                # Log what subdirectories were found
+                subdirs = [d.name for d in upload_dir.iterdir() if d.is_dir()]
+                if subdirs:
+                    self.logger.info(f"Uploaded directory structure including subdirectories: {', '.join(subdirs)}")
             else:
                 # Upload only files in the root directory
                 for file_path in upload_dir.iterdir():

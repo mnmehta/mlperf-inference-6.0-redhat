@@ -96,8 +96,14 @@ def upload_results(metadata: Dict[str, Any],
     
     # Start MLflow run
     try:
-        mlflow_client.start_run()
-        logger.info("MLflow run started")
+        # Get tags from metadata if available
+        mlflow_tags = mlflow_config.get('tags', {})
+        if mlflow_tags:
+            mlflow_client.start_run(tags=mlflow_tags)
+            logger.info(f"MLflow run started with {len(mlflow_tags)} tags")
+        else:
+            mlflow_client.start_run()
+            logger.info("MLflow run started")
         
         # Log parameters from harness config
         params = {
@@ -127,13 +133,17 @@ def upload_results(metadata: Dict[str, Any],
         
         # Generate and log description
         description = mlflow_client.get_client_description(test_results)
+        # Use description from metadata if available, otherwise use generated one
+        if mlflow_config.get('description'):
+            description = mlflow_config.get('description')
         mlflow_client.log_description(description)
         
-        # Upload artifacts
+        # Upload artifacts (includes all subdirectories including compliance folders like TEST07, TEST09)
         mlflow_client.upload_artifacts(
             output_dir=output_dir,
             include_subdirs=True
         )
+        logger.info(f"Uploaded all artifacts from {output_dir} including all subdirectories")
         
         logger.info("Successfully uploaded to MLflow")
         

@@ -1036,7 +1036,8 @@ class BaseHarness:
                 'tracking_uri': self.mlflow_tracking_uri,
                 'experiment_name': self.mlflow_experiment_name,
                 'output_dir': str(self.mlflow_output_dir),
-                'description': self.mlflow_description
+                'description': self.mlflow_description,
+                'tags': self.mlflow_tags if self.mlflow_tags else {}
             },
             'timestamp': datetime.now().isoformat()
         }
