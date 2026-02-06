@@ -196,7 +196,7 @@ class MLflowClient:
             if 'status' in test_results:
                 metrics['test_status'] = 1.0 if test_results['status'] == 'success' else 0.0
             if 'duration' in test_results:
-                metrics['test_duration_seconds'] = float(test_results['duration'])
+                metrics['test_duration_seconds'] = int(test_results['duration'])
             if 'scenario' in test_results:
                 # Log scenario as tag (already done in start_run, but can log as metric too)
                 pass
@@ -556,6 +556,26 @@ class MLflowClient:
             self.logger.warning(f"Error extracting LoadGen metrics: {e}")
         
         return metrics
+    
+    def set_tags(self, tags: Dict[str, str]):
+        """
+        Set tags for the current run.
+        
+        Args:
+            tags: Dictionary of tag names to values
+        """
+        if not self.current_run:
+            self.logger.warning("No active run. Tags not set.")
+            return
+        
+        try:
+            for key, value in tags.items():
+                # MLflow tags have length limits (255 chars)
+                tag_value = str(value)[:255] if value else ""
+                mlflow.set_tag(key, tag_value)
+            self.logger.info(f"Set {len(tags)} tags")
+        except Exception as e:
+            self.logger.error(f"Failed to set tags: {e}")
     
     def log_description(self, description: str):
         """

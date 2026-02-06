@@ -97,6 +97,7 @@ class BaseHarness:
                  mlflow_experiment_name: Optional[str] = None,
                  mlflow_output_dir: Optional[str] = None,
                  mlflow_description: Optional[str] = None,
+                 mlflow_tags: Optional[Dict[str, str]] = None,
                  server_coalesce_queries: Optional[bool] = None,
                  server_target_qps: Optional[float] = None,
                  dataset_name: Optional[str] = None,
@@ -133,6 +134,7 @@ class BaseHarness:
             mlflow_experiment_name: MLflow experiment name
             mlflow_output_dir: Output directory to upload to MLflow (defaults to output_dir)
             mlflow_description: Optional description for MLflow run (overrides auto-generated description)
+            mlflow_tags: Optional dictionary of tags to attach to MLflow run
             server_coalesce_queries: Enable query coalescing for Server scenario (Server only)
             server_target_qps: Target queries per second for Server scenario (Server only)
             dataset_name: Dataset name for config lookup
@@ -225,6 +227,7 @@ class BaseHarness:
         self.mlflow_experiment_name = mlflow_experiment_name
         self.mlflow_output_dir = Path(mlflow_output_dir) if mlflow_output_dir else self.output_dir
         self.mlflow_description = mlflow_description
+        self.mlflow_tags = mlflow_tags or {}
         self.mlflow_client = None
         
         # Note: logging was already set up at the beginning of __init__
@@ -1311,7 +1314,7 @@ class BaseHarness:
             
             # Save metadata
             test_results['status'] = 'success'
-            test_results['duration'] = time.time() - start_time
+            test_results['duration'] = int(time.time() - start_time)  # Ensure integer duration
             self.save_metadata(test_results)
             
             # Upload to MLflow if configured
@@ -1323,7 +1326,10 @@ class BaseHarness:
                     
                     # Start MLflow run if not already started
                     if not self.mlflow_client.current_run:
-                        self.mlflow_client.start_run()
+                        self.mlflow_client.start_run(tags=self.mlflow_tags)
+                    elif self.mlflow_tags:
+                        # If run already started, set tags separately
+                        self.mlflow_client.set_tags(self.mlflow_tags)
                     
                     # Log parameters from harness config
                     params = {
@@ -1399,7 +1405,7 @@ class BaseHarness:
         except Exception as e:
             test_results['status'] = 'error'
             test_results['error'] = str(e)
-            test_results['duration'] = time.time() - start_time
+            test_results['duration'] = int(time.time() - start_time)  # Ensure integer duration
             self.logger.error(f"Test failed: {e}", exc_info=True)
             
             # Save metadata even on failure

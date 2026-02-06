@@ -20,6 +20,42 @@ def str_to_bool(value):
         raise argparse.ArgumentTypeError(f'Boolean value expected, got: {value}')
 
 
+def _parse_mlflow_tags(tag_string: str) -> dict:
+    """
+    Parse MLflow tags from string format 'tag1:value1,tag2:value2'.
+    
+    Args:
+        tag_string: String with tags in format 'tag1:value1,tag2:value2' (comma-separated key:value pairs)
+        
+    Returns:
+        Dictionary of tag names to values
+    """
+    if not tag_string:
+        return {}
+    
+    tags = {}
+    # Split by comma to get individual tag:value pairs
+    pairs = tag_string.split(',')
+    
+    for pair in pairs:
+        pair = pair.strip()
+        if not pair:
+            continue
+        
+        # Split each pair by colon to get key and value
+        if ':' not in pair:
+            raise ValueError(f"Invalid mlflow-tag format. Expected 'tag1:value1,tag2:value2', got: {tag_string}")
+        
+        parts = pair.split(':', 1)  # Split only on first colon (in case value contains colons)
+        tag_name = parts[0].strip()
+        tag_value = parts[1].strip() if len(parts) > 1 else ""
+        
+        if tag_name:
+            tags[tag_name] = tag_value
+    
+    return tags
+
+
 def add_common_harness_args(parser: argparse.ArgumentParser):
     """
     Add common harness arguments to argument parser.
@@ -81,6 +117,8 @@ def add_common_harness_args(parser: argparse.ArgumentParser):
                        help="MLflow tracking server port")
     parser.add_argument("--mlflow-description", type=str, default=None,
                        help="Optional description for MLflow run (overrides auto-generated description)")
+    parser.add_argument("--mlflow-tag", type=str, default=None,
+                       help="MLflow tags in format 'tag1:value1,tag2:value2' (comma-separated key:value pairs)")
     
     # Server scenario arguments
     parser.add_argument("--server-coalesce-queries", type=str_to_bool,
@@ -241,6 +279,7 @@ def parse_common_harness_args(args):
         'mlflow_experiment_name': args.mlflow_experiment_name,
         'mlflow_output_dir': args.mlflow_output_dir,
         'mlflow_description': args.mlflow_description,
+        'mlflow_tags': _parse_mlflow_tags(args.mlflow_tag) if hasattr(args, 'mlflow_tag') and args.mlflow_tag else None,
         'server_coalesce_queries': args.server_coalesce_queries,
         'server_target_qps': args.server_target_qps,
         'dataset_config_file': args.dataset_config_file,
