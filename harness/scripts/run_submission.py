@@ -6,6 +6,42 @@ Python script to generate and execute MLPerf harness test commands.
 
 This script replaces the bash script with a cleaner Python implementation
 that generates bash commands for execution.
+
+Sample Usage:
+-------------
+# Run all Server tests
+python3 run_submission.py --scenario Server --server-target-qps 3 run-server
+
+# Run all Offline tests
+python3 run_submission.py --scenario Offline run-offline
+
+# Run all tests for both scenarios
+python3 run_submission.py --server-target-qps 3 run-all
+
+# Run specific test type
+python3 run_submission.py --scenario Server --server-target-qps 3 run-performance
+python3 run_submission.py --scenario Server --server-target-qps 3 run-accuracy
+
+# Run compliance tests (runs both TEST07 and TEST09 by default)
+python3 run_submission.py --scenario Offline run-compliance
+python3 run_submission.py run-compliance TEST07  # Run only TEST07
+python3 run_submission.py --scenario Server --server-target-qps 3 run-compliance TEST09
+
+# Dry run to see commands without executing
+python3 run_submission.py --dry-run run-server
+
+# Generate bash script
+python3 run_submission.py --print-bash run-server > run_tests.sh
+python3 run_submission.py --print-bash --scenario Offline run-compliance > compliance_tests.sh
+
+# Check accuracy results (runs check_accuracy.sh)
+python3 run_submission.py --check --scenario Server run-accuracy
+
+# Check compliance results (runs check_complaince.sh)
+# Checks both TEST07 and TEST09 by default if no test specified
+python3 run_submission.py --check --scenario Offline run-compliance
+python3 run_submission.py --check --scenario Server run-compliance TEST07
+python3 run_submission.py --check --scenario Offline run-compliance TEST09
 """
 
 import argparse
@@ -51,6 +87,7 @@ class HarnessRunner:
             'user_conf': os.environ.get('USER_CONF', ''),
             'dry_run': False,
             'print_bash': False,
+            'check': False,
         }
         
         # Derive dataset paths if dataset_dir is set
@@ -92,6 +129,13 @@ Examples:
   # Generate bash script
   %(prog)s --print-bash run-server > run_tests.sh
   %(prog)s --print-bash --scenario Offline run-compliance > compliance_tests.sh
+
+  # Check accuracy results
+  %(prog)s --check --scenario Server run-accuracy
+
+  # Check compliance results (checks both TEST07 and TEST09 by default)
+  %(prog)s --check --scenario Offline run-compliance
+  %(prog)s --check --scenario Server run-compliance TEST07
             """
         )
         
@@ -116,6 +160,7 @@ Examples:
         parser.add_argument('--user-conf', help='User config file for performance/accuracy tests')
         parser.add_argument('--dry-run', action='store_true', help='Print commands without executing')
         parser.add_argument('--print-bash', action='store_true', help='Print bash script with environment variables and commands')
+        parser.add_argument('--check', action='store_true', help='Run check scripts for accuracy/compliance results')
         
         # Commands
         parser.add_argument('command', nargs='?', choices=['run-server', 'run-offline', 'run-all', 
@@ -127,7 +172,7 @@ Examples:
         
         # Update config from parsed arguments
         for key, value in vars(parsed).items():
-            if value is not None and key not in ['command', 'command_args', 'dry_run', 'print_bash']:
+            if value is not None and key not in ['command', 'command_args', 'dry_run', 'print_bash', 'check']:
                 config_key = key.replace('-', '_')
                 if config_key in self.config:
                     self.config[config_key] = value
@@ -136,6 +181,7 @@ Examples:
         
         self.config['dry_run'] = parsed.dry_run
         self.config['print_bash'] = parsed.print_bash
+        self.config['check'] = parsed.check
         
         # Handle run-compliance command args (scenario and/or test)
         command = parsed.command
@@ -247,7 +293,9 @@ Examples:
                      audit_config_path: Optional[str] = None) -> List[str]:
         """Build the harness command."""
         # Build output directory
-        output_dir = Path(self.config['output_dir']) / scenario.lower() / test_mode
+        # For compliance tests, use "compliance" directory instead of test_mode
+        output_mode = 'compliance' if audit_config_path else test_mode
+        output_dir = Path(self.config['output_dir']) / scenario.lower() / output_mode
         if output_subdir:
             output_dir = output_dir / output_subdir
         
@@ -367,7 +415,9 @@ Examples:
         cmd = self.build_command(scenario, test_mode, dataset_path, output_subdir,
                                description, tags, audit_config_path)
         
-        output_dir = Path(self.config['output_dir']) / scenario.lower() / test_mode
+        # For compliance tests, use "compliance" directory instead of test_mode
+        output_mode = 'compliance' if audit_config_path else test_mode
+        output_dir = Path(self.config['output_dir']) / scenario.lower() / output_mode
         if output_subdir:
             output_dir = output_dir / output_subdir
         
@@ -463,7 +513,7 @@ Examples:
             description = f"{scenario} Compliance {test_name} QPS{self.config['server_target_qps']}"
             tags = f"{tags},qps:{self.config['server_target_qps']}"
         
-        # Compliance tests use performance mode with audit.config
+        # Compliance tests use performance mode with audit.config, but output to "compliance" directory
         return self.run_test(scenario, 'performance', dataset_path, test_name.lower(),
                            description, tags, audit_config_path)
     
@@ -648,6 +698,125 @@ Examples:
         formatted = result.replace(' --', ' \\\n    --')
         return formatted
     
+    def run_check_accuracy(self, scenario: str) -> bool:
+        """Run accuracy check script."""
+        # Output directory for accuracy test
+        output_dir = Path(self.config['output_dir']) / scenario.lower() / 'accuracy'
+        
+        if not output_dir.exists():
+            print(f"Error: Output directory not found: {output_dir}")
+            print("       Please run accuracy test first before checking results.")
+            return False
+        
+        check_script = self.script_dir / 'check_accuracy.sh'
+        if not check_script.exists():
+            print(f"Error: check_accuracy.sh not found at {check_script}")
+            return False
+        
+        print("==========================================")
+        print(f"Running accuracy check for {scenario} scenario")
+        print(f"Output directory: {output_dir}")
+        print("==========================================")
+        print()
+        
+        # Run check script - output goes to accuracy.txt in the same directory
+        cmd = ['bash', str(check_script), str(output_dir)]
+        
+        if self.config['dry_run']:
+            print("[DRY RUN] Would run:")
+            print(f"  {' '.join(cmd)}")
+            print(f"  Output redirected to: {output_dir / 'accuracy.txt'}")
+            return True
+        
+        try:
+            # Redirect output to accuracy.txt
+            with open(output_dir / 'accuracy.txt', 'w') as f:
+                result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, check=True)
+            print(f"✓ Accuracy check completed. Results saved to: {output_dir / 'accuracy.txt'}")
+            return result.returncode == 0
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Accuracy check failed with exit code {e.returncode}")
+            print(f"  Check {output_dir / 'accuracy.txt'} for details")
+            return False
+        except Exception as e:
+            print(f"✗ Error running accuracy check: {e}")
+            return False
+    
+    def run_check_compliance(self, scenario: str, test_name: str) -> bool:
+        """Run compliance check script."""
+        # Output directory for compliance test
+        output_dir = Path(self.config['output_dir']) / scenario.lower() / 'compliance' / test_name.lower()
+        check_output_dir = output_dir.parent  # One folder above test07/test09
+        
+        if not output_dir.exists():
+            print(f"Error: Output directory not found: {output_dir}")
+            print(f"       Please run compliance test {test_name} first before checking results.")
+            return False
+        
+        # Find compliance directory and audit.config
+        compliance_dir = self.harness_dir.parent / 'compliance'
+        test_dir = compliance_dir / test_name / self.config['model_category']
+        audit_config = test_dir / 'audit.config'
+        if not audit_config.exists():
+            test_dir = compliance_dir / test_name
+            audit_config = test_dir / 'audit.config'
+        
+        if not audit_config.exists():
+            print(f"Error: audit.config not found for {test_name}")
+            return False
+        
+        print("==========================================")
+        print(f"Running compliance check for {scenario} scenario, {test_name}")
+        print(f"Test output directory: {output_dir}")
+        print(f"Check output directory: {check_output_dir}")
+        print("==========================================")
+        print()
+        
+        # Build command to call run_verification.py directly with -o set to parent directory
+        run_verification = compliance_dir / test_name / 'run_verification.py'
+        if not run_verification.exists():
+            print(f"Error: run_verification.py not found at {run_verification}")
+            return False
+        
+        # Build accuracy script command
+        accuracy_script_cmd = (
+            f'python3 {self.harness_dir.parent / "language" / "gpt-oss-120b" / "eval_mlperf_accuracy.py"} '
+            f'--mlperf-log {output_dir / "mlperf" / "mlperf_log_accuracy.json"} '
+            f'--reference-data {Path(self.config["dataset_dir"]) / "acc" / "acc_eval_compliance_gpqa.parquet"} '
+            f'--tokenizer openai/gpt-oss-120b'
+        )
+        
+        cmd = [
+            'python3',
+            str(run_verification),
+            '-c', str(output_dir / 'mlperf'),
+            '-o', str(check_output_dir),  # One folder above test07/test09
+            '--audit-config', str(audit_config),
+            '--accuracy-script', accuracy_script_cmd
+        ]
+        
+        if self.config['dry_run']:
+            print("[DRY RUN] Would run:")
+            print(f"  {' '.join(cmd)}")
+            print(f"  Output directory: {check_output_dir}")
+            return True
+        
+        try:
+            # Set DATASET_DIR environment variable if needed
+            env = os.environ.copy()
+            if self.config['dataset_dir']:
+                env['DATASET_DIR'] = self.config['dataset_dir']
+            
+            result = subprocess.run(cmd, env=env, check=True, cwd=str(self.harness_dir.parent))
+            print(f"✓ Compliance check for {test_name} completed. Results in: {check_output_dir}")
+            return result.returncode == 0
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Compliance check for {test_name} failed with exit code {e.returncode}")
+            return False
+        except Exception as e:
+            print(f"✗ Error running compliance check: {e}")
+            return False
+    
     def run_all_tests(self, scenario: str) -> bool:
         """Run all tests for a scenario."""
         print("==========================================")
@@ -741,42 +910,78 @@ Examples:
         
         # Execute command
         success = True
-        if command == 'run-server':
-            success = self.run_all_tests('Server')
-        elif command == 'run-offline':
-            success = self.run_all_tests('Offline')
-        elif command == 'run-all':
-            print("==========================================")
-            print("Running all tests for both Server and Offline scenarios")
-            print("==========================================")
-            print()
-            
-            print(">>> Running all Server tests...")
-            if not self.run_all_tests('Server'):
+        
+        # Handle --check mode
+        if self.config['check']:
+            if command == 'run-accuracy':
+                success = self.run_check_accuracy(self.config['scenario'])
+            elif command == 'run-compliance':
+                # Extract scenario and test from command_args if provided
+                compliance_test = None
+                for arg in command_args:
+                    if arg in ['Server', 'Offline']:
+                        self.config['scenario'] = arg
+                    elif arg.startswith('TEST'):
+                        compliance_test = arg
+                
+                # If no test specified, check both TEST07 and TEST09
+                if compliance_test is None:
+                    print(">>> Checking compliance test TEST07...")
+                    if not self.run_check_compliance(self.config['scenario'], 'TEST07'):
+                        success = False
+                    print()
+                    
+                    print(">>> Checking compliance test TEST09...")
+                    if not self.run_check_compliance(self.config['scenario'], 'TEST09'):
+                        success = False
+                    print()
+                    
+                    if success:
+                        print(f"✓ All compliance checks for {self.config['scenario']} scenario completed successfully")
+                else:
+                    success = self.run_check_compliance(self.config['scenario'], compliance_test)
+            else:
+                print(f"ERROR: --check option is only supported for 'run-accuracy' and 'run-compliance' commands")
+                print(f"       You specified: {command}")
                 success = False
-            print()
-            
-            print(">>> Running all Offline tests...")
-            if not self.run_all_tests('Offline'):
-                success = False
-            print()
-            
-            if success:
-                print("✓ All tests for both scenarios completed successfully")
-        elif command == 'run-performance':
-            success = self.run_performance(self.config['scenario'])
-        elif command == 'run-accuracy':
-            success = self.run_accuracy(self.config['scenario'])
-        elif command == 'run-compliance':
-            # Extract scenario and test from command_args if provided
-            compliance_test = None
-            for arg in command_args:
-                if arg in ['Server', 'Offline']:
-                    self.config['scenario'] = arg
-                elif arg.startswith('TEST'):
-                    compliance_test = arg
-            # If no test specified, run_compliance will run both TEST07 and TEST09
-            success = self.run_compliance(self.config['scenario'], compliance_test)
+        else:
+            # Normal execution mode
+            if command == 'run-server':
+                success = self.run_all_tests('Server')
+            elif command == 'run-offline':
+                success = self.run_all_tests('Offline')
+            elif command == 'run-all':
+                print("==========================================")
+                print("Running all tests for both Server and Offline scenarios")
+                print("==========================================")
+                print()
+                
+                print(">>> Running all Server tests...")
+                if not self.run_all_tests('Server'):
+                    success = False
+                print()
+                
+                print(">>> Running all Offline tests...")
+                if not self.run_all_tests('Offline'):
+                    success = False
+                print()
+                
+                if success:
+                    print("✓ All tests for both scenarios completed successfully")
+            elif command == 'run-performance':
+                success = self.run_performance(self.config['scenario'])
+            elif command == 'run-accuracy':
+                success = self.run_accuracy(self.config['scenario'])
+            elif command == 'run-compliance':
+                # Extract scenario and test from command_args if provided
+                compliance_test = None
+                for arg in command_args:
+                    if arg in ['Server', 'Offline']:
+                        self.config['scenario'] = arg
+                    elif arg.startswith('TEST'):
+                        compliance_test = arg
+                # If no test specified, run_compliance will run both TEST07 and TEST09
+                success = self.run_compliance(self.config['scenario'], compliance_test)
         
         sys.exit(0 if success else 1)
 
