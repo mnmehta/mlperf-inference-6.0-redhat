@@ -781,22 +781,65 @@ Examples:
             print(f"Error: run_verification.py not found at {run_verification}")
             return False
         
-        # Build accuracy script command (must be in quotes)
-        accuracy_script_cmd = (
-            f'python3 {self.harness_dir.parent / "language" / "gpt-oss-120b" / "eval_mlperf_accuracy.py"} '
-            f'--mlperf-log {output_dir / "mlperf" / "mlperf_log_accuracy.json"} '
-            f'--reference-data {Path(self.config["dataset_dir"]) / "acc" / "acc_eval_compliance_gpqa.parquet"} '
-            f'--tokenizer openai/gpt-oss-120b'
-        )
+        # Determine compliance directory path
+        # The run_verification.py expects -c to point to the directory containing mlperf_log files
+        # Check multiple possible locations
+        compliance_dir_path = None
         
+        # Option 1: mlperf subdirectory
+        mlperf_dir = output_dir / 'mlperf'
+        if mlperf_dir.exists() and mlperf_dir.is_dir():
+            compliance_dir_path = mlperf_dir
+        # Option 2: mlperf files directly in output_dir
+        elif (output_dir / 'mlperf_log_accuracy.json').exists() or (output_dir / 'mlperf_log_detail.txt').exists():
+            compliance_dir_path = output_dir
+        # Option 3: Check if there's a nested structure
+        else:
+            # Look for any subdirectory that might contain mlperf files
+            for subdir in output_dir.iterdir():
+                if subdir.is_dir():
+                    if (subdir / 'mlperf_log_accuracy.json').exists() or (subdir / 'mlperf_log_detail.txt').exists():
+                        compliance_dir_path = subdir
+                        break
+        
+        if compliance_dir_path is None:
+            print(f"Error: Could not find mlperf directory or mlperf log files in: {output_dir}")
+            print(f"       Expected one of:")
+            print(f"         - {output_dir / 'mlperf'} (directory)")
+            print(f"         - mlperf_log_*.json files directly in {output_dir}")
+            print(f"       Please ensure the compliance test completed successfully.")
+            return False
+        
+        # Build command - only add --accuracy-script for TEST07, not TEST09
         cmd = [
             'python3',
             str(run_verification),
-            '-c', str(output_dir / 'mlperf'),
+            '-c', str(compliance_dir_path),
             '-o', str(check_output_dir),  # One folder above test07/test09
             '--audit-config', str(audit_config),
-            '--accuracy-script', accuracy_script_cmd  # Pass as single string (subprocess handles it)
         ]
+        
+        # Only add --accuracy-script for TEST07
+        if test_name == 'TEST07':
+            # Find mlperf_log_accuracy.json in the compliance directory
+            mlperf_log = compliance_dir_path / 'mlperf_log_accuracy.json'
+            if not mlperf_log.exists():
+                # Try alternative locations
+                for possible_log in compliance_dir_path.glob('**/mlperf_log_accuracy.json'):
+                    mlperf_log = possible_log
+                    break
+            
+            if not mlperf_log.exists():
+                print(f"Warning: mlperf_log_accuracy.json not found in {compliance_dir_path}")
+                print(f"         Continuing without --accuracy-script")
+            else:
+                accuracy_script_cmd = (
+                    f'python3 {self.harness_dir.parent / "language" / "gpt-oss-120b" / "eval_mlperf_accuracy.py"} '
+                    f'--mlperf-log {mlperf_log} '
+                    f'--reference-data {Path(self.config["dataset_dir"]) / "acc" / "acc_eval_compliance_gpqa.parquet"} '
+                    f'--tokenizer openai/gpt-oss-120b'
+                )
+                cmd.extend(['--accuracy-script', accuracy_script_cmd])
         
         if self.config['dry_run']:
             print("[DRY RUN] Would run:")
