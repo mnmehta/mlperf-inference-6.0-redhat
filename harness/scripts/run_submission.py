@@ -788,8 +788,9 @@ Examples:
             if self.config['dataset_dir']:
                 env['DATASET_DIR'] = self.config['dataset_dir']
             
-            # Run from scripts directory (script uses relative paths like ../compliance/)
-            result = subprocess.run(cmd, env=env, check=True, cwd=str(self.script_dir))
+            # Run the script - it now resolves paths relative to its own location
+            # No need to specify cwd since the script handles paths correctly
+            result = subprocess.run(cmd, env=env, check=True)
             print(f"✓ Compliance check for {test_name} completed. Results in: {output_dir}")
             return result.returncode == 0
         except subprocess.CalledProcessError as e:
