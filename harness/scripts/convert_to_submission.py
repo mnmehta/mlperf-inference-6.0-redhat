@@ -91,30 +91,31 @@ class SubmissionConverter:
         # Convert accuracy directory
         input_accuracy = input_scenario_dir / 'accuracy'
         if input_accuracy.exists():
-            # Create run_1 subdirectory and copy files from mlperf subdirectory
+            output_accuracy = output_scenario_dir / 'accuracy'
+            output_accuracy.mkdir(parents=True, exist_ok=True)
+            
+            # Copy files from mlperf subdirectory directly to accuracy output (no run_1 subdirectory)
             input_mlperf = input_accuracy / 'mlperf'
             if input_mlperf.exists():
-                output_accuracy = output_scenario_dir / 'accuracy' / 'run_1'
-                output_accuracy.mkdir(parents=True, exist_ok=True)
-                # Copy only files from mlperf subdirectory to run_1 (no subdirectories)
+                # Copy only files from mlperf subdirectory (no subdirectories)
                 for item in input_mlperf.iterdir():
                     if item.is_file():
                         dest = output_accuracy / item.name
                         shutil.copy2(item, dest)
                         if self.debug:
                             print(f"    [DEBUG] Copied: {item} -> {dest}")
-                print(f"  Copied accuracy data to run_1")
+                print(f"  Copied accuracy data")
             else:
                 print(f"  Warning: mlperf subdirectory not found in {input_accuracy}")
             
             # Copy accuracy.txt if it exists
             input_accuracy_txt = input_accuracy / 'accuracy.txt'
             if input_accuracy_txt.exists():
-                output_accuracy_txt = output_scenario_dir / 'accuracy' / 'accuracy.txt'
+                output_accuracy_txt = output_scenario_dir / 'accuracy.txt'
                 shutil.copy2(input_accuracy_txt, output_accuracy_txt)
                 if self.debug:
                     print(f"    [DEBUG] Copied: {input_accuracy_txt} -> {output_accuracy_txt}")
-                print(f"  Copied accuracy.txt")
+                print(f"  Copied accuracy.txt to scenario output directory")
         
         # Convert performance directory
         input_performance = input_scenario_dir / 'performance'
@@ -138,13 +139,16 @@ class SubmissionConverter:
         # Convert compliance directory
         input_compliance = input_scenario_dir / 'compliance'
         if input_compliance.exists():
-            # Compliance tests go into scenario/TEST07, scenario/TEST09, etc.
+            # Copy TEST07 and TEST09 folders as-is
             for test_dir in input_compliance.iterdir():
                 if test_dir.is_dir() and test_dir.name.upper().startswith('TEST'):
                     test_name = test_dir.name.upper()  # test07 -> TEST07
                     output_test_dir = output_scenario_dir / test_name
-                    self._convert_compliance_test(test_dir, output_test_dir, test_name)
-                    print(f"  Copied compliance {test_name}")
+                    # Copy entire directory as-is
+                    self._copy_directory(test_dir, output_test_dir)
+                    if self.debug:
+                        print(f"    [DEBUG] Copied directory: {test_dir} -> {output_test_dir}")
+                    print(f"  Copied compliance {test_name} (as-is)")
         
         # Copy other files (measurements.json, mlperf.conf, user.conf, README.md)
         for file_name in ['measurements.json', 'mlperf.conf', 'user.conf', 'README.md']:
