@@ -746,113 +746,40 @@ Examples:
             return False
     
     def run_check_compliance(self, scenario: str, test_name: str) -> bool:
-        """Run compliance check script."""
+        """Run compliance check script using check_complaince.sh."""
         # Output directory for compliance test
         output_dir = Path(self.config['output_dir']) / scenario.lower() / 'compliance' / test_name.lower()
-        check_output_dir = output_dir.parent  # One folder above test07/test09
         
         if not output_dir.exists():
             print(f"Error: Output directory not found: {output_dir}")
             print(f"       Please run compliance test {test_name} first before checking results.")
             return False
         
-        # Find compliance directory and audit.config
-        compliance_dir = self.harness_dir.parent / 'compliance'
-        test_dir = compliance_dir / test_name / self.config['model_category']
-        audit_config = test_dir / 'audit.config'
-        if not audit_config.exists():
-            test_dir = compliance_dir / test_name
-            audit_config = test_dir / 'audit.config'
-        
-        if not audit_config.exists():
-            print(f"Error: audit.config not found for {test_name}")
+        # Check if check_complaince.sh exists
+        check_script = self.script_dir / 'check_complaince.sh'
+        if not check_script.exists():
+            print(f"Error: check_complaince.sh not found at {check_script}")
             return False
         
         print("==========================================")
         print(f"Running compliance check for {scenario} scenario, {test_name}")
         print(f"Test output directory: {output_dir}")
-        print(f"Check output directory: {check_output_dir}")
         print("==========================================")
         print()
         
-        # Build command to call run_verification.py directly with -o set to parent directory
-        run_verification = compliance_dir / test_name / 'run_verification.py'
-        if not run_verification.exists():
-            print(f"Error: run_verification.py not found at {run_verification}")
-            return False
-        
-        # Determine compliance directory path
-        # The run_verification.py expects -c to point to the directory containing mlperf_log files
-        # Check multiple possible locations
-        compliance_dir_path = None
-        
-        # Option 1: mlperf subdirectory
-        mlperf_dir = output_dir / 'mlperf'
-        if mlperf_dir.exists() and mlperf_dir.is_dir():
-            compliance_dir_path = mlperf_dir
-        # Option 2: mlperf files directly in output_dir
-        elif (output_dir / 'mlperf_log_accuracy.json').exists() or (output_dir / 'mlperf_log_detail.txt').exists():
-            compliance_dir_path = output_dir
-        # Option 3: Check if there's a nested structure
-        else:
-            # Look for any subdirectory that might contain mlperf files
-            for subdir in output_dir.iterdir():
-                if subdir.is_dir():
-                    if (subdir / 'mlperf_log_accuracy.json').exists() or (subdir / 'mlperf_log_detail.txt').exists():
-                        compliance_dir_path = subdir
-                        break
-        
-        if compliance_dir_path is None:
-            print(f"Error: Could not find mlperf directory or mlperf log files in: {output_dir}")
-            print(f"       Expected one of:")
-            print(f"         - {output_dir / 'mlperf'} (directory)")
-            print(f"         - mlperf_log_*.json files directly in {output_dir}")
-            print(f"       Please ensure the compliance test completed successfully.")
-            return False
-        
-        # Build command - only add --accuracy-script for TEST07, not TEST09
-        cmd = [
-            'python3',
-            str(run_verification),
-            '-c', str(compliance_dir_path),
-            '-o', str(check_output_dir),  # One folder above test07/test09
-            '--audit-config', str(audit_config),
-        ]
-        
-        # Only add --accuracy-script for TEST07
-        if test_name == 'TEST07':
-            # Find mlperf_log_accuracy.json in the compliance directory
-            mlperf_log = compliance_dir_path / 'mlperf_log_accuracy.json'
-            if not mlperf_log.exists():
-                # Try alternative locations
-                for possible_log in compliance_dir_path.glob('**/mlperf_log_accuracy.json'):
-                    mlperf_log = possible_log
-                    break
-            
-            if not mlperf_log.exists():
-                print(f"Warning: mlperf_log_accuracy.json not found in {compliance_dir_path}")
-                print(f"         Continuing without --accuracy-script")
-            else:
-                accuracy_script_cmd = (
-                    f'python3 {self.harness_dir.parent / "language" / "gpt-oss-120b" / "eval_mlperf_accuracy.py"} '
-                    f'--mlperf-log {mlperf_log} '
-                    f'--reference-data {Path(self.config["dataset_dir"]) / "acc" / "acc_eval_compliance_gpqa.parquet"} '
-                    f'--tokenizer openai/gpt-oss-120b'
-                )
-                cmd.extend(['--accuracy-script', accuracy_script_cmd])
+        # Build command to call check_complaince.sh
+        # The script takes two arguments: output_dir and TEST name
+        cmd = ['bash', str(check_script), str(output_dir), test_name]
         
         if self.config['dry_run']:
             print("[DRY RUN] Would run:")
-            # Format with quotes for display (method will automatically quote --accuracy-script value)
-            formatted = self._format_command_as_bash(cmd)
-            print(f"  {formatted}")
-            print(f"  Output directory: {check_output_dir}")
+            print(f"  {' '.join(cmd)}")
+            print(f"  Output directory: {output_dir}")
             return True
         
         # Display command before running
         print("Command:")
-        formatted = self._format_command_as_bash(cmd)
-        print(f"  {formatted}")
+        print(f"  {' '.join(cmd)}")
         print()
         
         try:
@@ -861,8 +788,9 @@ Examples:
             if self.config['dataset_dir']:
                 env['DATASET_DIR'] = self.config['dataset_dir']
             
-            result = subprocess.run(cmd, env=env, check=True, cwd=str(self.harness_dir.parent))
-            print(f"✓ Compliance check for {test_name} completed. Results in: {check_output_dir}")
+            # Run from scripts directory (script uses relative paths like ../compliance/)
+            result = subprocess.run(cmd, env=env, check=True, cwd=str(self.script_dir))
+            print(f"✓ Compliance check for {test_name} completed. Results in: {output_dir}")
             return result.returncode == 0
         except subprocess.CalledProcessError as e:
             print(f"✗ Compliance check for {test_name} failed with exit code {e.returncode}")
