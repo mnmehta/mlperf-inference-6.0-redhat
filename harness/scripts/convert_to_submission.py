@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -29,6 +30,11 @@ class SubmissionConverter:
         self.division = division
         self.organization = 'RedHat'
         self.debug = debug
+        
+        # Find loadgen/mlperf.conf relative to script location
+        script_dir = Path(__file__).parent.resolve()
+        self.loadgen_mlperf_conf = script_dir / '..' / '..' / 'loadgen' / 'mlperf.conf'
+        self.loadgen_mlperf_conf = self.loadgen_mlperf_conf.resolve()
         
         if not self.input_dir.exists():
             raise ValueError(f"Input directory does not exist: {input_dir}")
@@ -111,11 +117,11 @@ class SubmissionConverter:
             # Copy accuracy.txt if it exists
             input_accuracy_txt = input_accuracy / 'accuracy.txt'
             if input_accuracy_txt.exists():
-                output_accuracy_txt = output_scenario_dir / 'accuracy.txt'
+                output_accuracy_txt = output_accuracy / 'accuracy.txt'
                 shutil.copy2(input_accuracy_txt, output_accuracy_txt)
                 if self.debug:
                     print(f"    [DEBUG] Copied: {input_accuracy_txt} -> {output_accuracy_txt}")
-                print(f"  Copied accuracy.txt to scenario output directory")
+                print(f"  Copied accuracy.txt to accuracy subdirectory")
         
         # Convert performance directory
         input_performance = input_scenario_dir / 'performance'
@@ -139,26 +145,26 @@ class SubmissionConverter:
         # Convert compliance directory
         input_compliance = input_scenario_dir / 'compliance'
         if input_compliance.exists():
-            # Copy TEST07 and TEST09 folders as-is
+            # Copy TEST07 and TEST09 subdirectories from within test07/test09 folders
             for test_dir in input_compliance.iterdir():
-                if test_dir.is_dir() and test_dir.name.upper().startswith('TEST'):
-                    test_name = test_dir.name.upper()  # test07 -> TEST07
-                    output_test_dir = output_scenario_dir / test_name
-                    # Copy entire directory as-is
-                    self._copy_directory(test_dir, output_test_dir)
-                    if self.debug:
-                        print(f"    [DEBUG] Copied directory: {test_dir} -> {output_test_dir}")
-                    print(f"  Copied compliance {test_name} (as-is)")
+                if test_dir.is_dir():
+                    # Look for TEST07 or TEST09 subdirectory inside test07/test09
+                    test_name_lower = test_dir.name.lower()
+                    if test_name_lower in ['test07', 'test09']:
+                        test_name = test_name_lower.upper()  # test07 -> TEST07
+                        inner_test_dir = test_dir / test_name
+                        if inner_test_dir.exists() and inner_test_dir.is_dir():
+                            output_test_dir = output_scenario_dir / test_name
+                            # Copy the TEST07 or TEST09 subdirectory as-is
+                            self._copy_directory(inner_test_dir, output_test_dir)
+                            if self.debug:
+                                print(f"    [DEBUG] Copied directory: {inner_test_dir} -> {output_test_dir}")
+                            print(f"  Copied compliance {test_name} (as-is)")
+                        else:
+                            print(f"  Warning: {test_name} subdirectory not found in {test_dir}")
         
-        # Copy other files (measurements.json, mlperf.conf, user.conf, README.md)
-        for file_name in ['measurements.json', 'mlperf.conf', 'user.conf', 'README.md']:
-            input_file = input_scenario_dir / file_name
-            if input_file.exists():
-                dest = output_scenario_dir / file_name
-                shutil.copy2(input_file, dest)
-                if self.debug:
-                    print(f"    [DEBUG] Copied: {input_file} -> {dest}")
-                print(f"  Copied {file_name}")
+        # Create required files in scenario output directory
+        self._create_scenario_files(output_scenario_dir)
     
     def _convert_compliance_test(self, input_test_dir: Path, output_test_dir: Path, test_name: str):
         """Convert a compliance test directory."""
@@ -205,6 +211,64 @@ class SubmissionConverter:
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
+    
+    def _create_scenario_files(self, output_scenario_dir: Path):
+        """Create required files in scenario output directory."""
+        # Create measurements.json with default content
+        measurements_json = output_scenario_dir / 'measurements.json'
+        if not measurements_json.exists():
+            measurements_data = {
+                "input_data_types": "int32",
+                "retraining": "No",
+                "starting_weights_filename": "Original Huggingface model weights",
+                "weight_data_types": "fp8",
+                "weight_transformations": "quantization"
+            }
+            with open(measurements_json, 'w') as f:
+                json.dump(measurements_data, f, indent=4)
+            if self.debug:
+                print(f"    [DEBUG] Created: {measurements_json}")
+            print(f"  Created measurements.json")
+        
+        # Copy mlperf.conf from loadgen directory
+        mlperf_conf = output_scenario_dir / 'mlperf.conf'
+        if not mlperf_conf.exists():
+            if self.loadgen_mlperf_conf.exists():
+                shutil.copy2(self.loadgen_mlperf_conf, mlperf_conf)
+                if self.debug:
+                    print(f"    [DEBUG] Copied: {self.loadgen_mlperf_conf} -> {mlperf_conf}")
+                print(f"  Copied mlperf.conf from loadgen")
+            else:
+                print(f"  Warning: mlperf.conf not found at {self.loadgen_mlperf_conf}")
+        
+        # Create user.conf (empty file)
+        user_conf = output_scenario_dir / 'user.conf'
+        if not user_conf.exists():
+            user_conf.touch()
+            if self.debug:
+                print(f"    [DEBUG] Created: {user_conf}")
+            print(f"  Created user.conf")
+        
+        # Create README.md with basic content
+        readme_md = output_scenario_dir / 'README.md'
+        if not readme_md.exists():
+            scenario_name = output_scenario_dir.name
+            readme_content = f"""# {scenario_name} Scenario
+
+This directory contains the MLPerf inference results for the {scenario_name} scenario.
+
+## Contents
+
+- `accuracy/`: Accuracy test results
+- `performance/`: Performance test results
+- `measurements.json`: Measurement configuration
+- `mlperf.conf`: MLPerf configuration file
+- `user.conf`: User configuration overrides
+"""
+            readme_md.write_text(readme_content)
+            if self.debug:
+                print(f"    [DEBUG] Created: {readme_md}")
+            print(f"  Created README.md")
     
     def _create_placeholder_files(self, src_path: Path, systems_path: Path, docs_path: Path):
         """Create placeholder files if they don't exist."""
