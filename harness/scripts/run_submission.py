@@ -385,10 +385,8 @@ Examples:
         else:
             print("Command:")
         
-        # Print command in multi-line format
-        cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '/' in arg else arg for arg in cmd)
-        # Split on ' --' to put each argument on a new line
-        formatted = cmd_str.replace(' --', ' \\\n    --')
+        # Print command in multi-line format using the formatting method
+        formatted = self._format_command_as_bash(cmd)
         print(f"  {formatted}")
         print("==========================================")
     
@@ -686,11 +684,16 @@ Examples:
         """Format command as a bash command line."""
         # Quote arguments that need quoting
         quoted_cmd = []
-        for arg in cmd:
-            if ' ' in arg or '/' in arg or '$' in arg:
+        prev_arg = None
+        for i, arg in enumerate(cmd):
+            # Always quote --mlflow-tag values and --accuracy-script values
+            if prev_arg in ['--mlflow-tag', '--accuracy-script']:
+                quoted_cmd.append(f'"{arg}"')
+            elif ' ' in arg or '/' in arg or '$' in arg or ':' in arg:
                 quoted_cmd.append(f'"{arg}"')
             else:
                 quoted_cmd.append(arg)
+            prev_arg = arg
         
         # Format as multi-line with continuation
         result = ' '.join(quoted_cmd)
@@ -778,7 +781,7 @@ Examples:
             print(f"Error: run_verification.py not found at {run_verification}")
             return False
         
-        # Build accuracy script command
+        # Build accuracy script command (must be in quotes)
         accuracy_script_cmd = (
             f'python3 {self.harness_dir.parent / "language" / "gpt-oss-120b" / "eval_mlperf_accuracy.py"} '
             f'--mlperf-log {output_dir / "mlperf" / "mlperf_log_accuracy.json"} '
@@ -792,14 +795,22 @@ Examples:
             '-c', str(output_dir / 'mlperf'),
             '-o', str(check_output_dir),  # One folder above test07/test09
             '--audit-config', str(audit_config),
-            '--accuracy-script', accuracy_script_cmd
+            '--accuracy-script', accuracy_script_cmd  # Pass as single string (subprocess handles it)
         ]
         
         if self.config['dry_run']:
             print("[DRY RUN] Would run:")
-            print(f"  {' '.join(cmd)}")
+            # Format with quotes for display (method will automatically quote --accuracy-script value)
+            formatted = self._format_command_as_bash(cmd)
+            print(f"  {formatted}")
             print(f"  Output directory: {check_output_dir}")
             return True
+        
+        # Display command before running
+        print("Command:")
+        formatted = self._format_command_as_bash(cmd)
+        print(f"  {formatted}")
+        print()
         
         try:
             # Set DATASET_DIR environment variable if needed
