@@ -17,7 +17,7 @@ TEST=$(echo "$TEST" | tr '[:lower:]' '[:upper:]')
 # Check if TEST is TEST07 or TEST09
 if [ "$TEST" = "TEST07" ]; then
     # TEST07 requires --accuracy-script
-    python3 ../compliance/${TEST}/run_verification.py -c ${DIR}/mlperf/ -o ${DIR} \
+    python3 ../../compliance/${TEST}/run_verification.py -c ${DIR}/mlperf/ -o ${DIR} \
         --audit-config ../compliance/${TEST}/gpt-oss-120b/audit.config \
         --accuracy-script "python3 ../language/gpt-oss-120b/eval_mlperf_accuracy.py \
             --mlperf-log ${DIR}/mlperf/mlperf_log_accuracy.json \
@@ -25,7 +25,7 @@ if [ "$TEST" = "TEST07" ]; then
             --tokenizer openai/gpt-oss-120b"
 elif [ "$TEST" = "TEST09" ]; then
     # TEST09 does not require --accuracy-script
-    python3 ../compliance/${TEST}/run_verification.py -c ${DIR}/mlperf/ -o ${DIR} \
+    python3 ../../compliance/${TEST}/run_verification.py -c ${DIR}/mlperf/ -o ${DIR} \
         --audit-config ../compliance/${TEST}/gpt-oss-120b/audit.config
 else
     echo "Error: Invalid test name: $TEST"
