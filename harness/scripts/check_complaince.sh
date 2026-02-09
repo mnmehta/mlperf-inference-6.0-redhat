@@ -21,8 +21,8 @@ TEST=$(echo "$TEST" | tr '[:lower:]' '[:upper:]')
 # Script is in harness/scripts/, so:
 # - compliance is at ../../compliance/ (repo root level)
 # - language is at ../language/ (harness level)
-COMPLIANCE_DIR="${SCRIPT_DIR}/../compliance"
-LANGUAGE_DIR="${SCRIPT_DIR}/../language"
+COMPLIANCE_DIR="${SCRIPT_DIR}/../../compliance"
+LANGUAGE_DIR="${SCRIPT_DIR}/../../language"
 
 # Check if TEST is TEST07 or TEST09
 if [ "$TEST" = "TEST07" ]; then

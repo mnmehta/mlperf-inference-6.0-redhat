@@ -97,9 +97,20 @@ class SubmissionConverter:
         # Convert performance directory
         input_performance = input_scenario_dir / 'performance'
         if input_performance.exists():
-            output_performance = output_scenario_dir / 'performance'
-            self._copy_directory(input_performance, output_performance)
-            print(f"  Copied performance data")
+            # Create run_1 subdirectory and copy files from mlperf subdirectory
+            input_mlperf = input_performance / 'mlperf'
+            if input_mlperf.exists():
+                output_performance = output_scenario_dir / 'performance' / 'run_1'
+                output_performance.mkdir(parents=True, exist_ok=True)
+                # Copy all files from mlperf subdirectory to run_1
+                for item in input_mlperf.iterdir():
+                    if item.is_file():
+                        shutil.copy2(item, output_performance / item.name)
+                    elif item.is_dir():
+                        shutil.copytree(item, output_performance / item.name)
+                print(f"  Copied performance data to run_1")
+            else:
+                print(f"  Warning: mlperf subdirectory not found in {input_performance}")
         
         # Convert compliance directory
         input_compliance = input_scenario_dir / 'compliance'
@@ -109,7 +120,7 @@ class SubmissionConverter:
                 if test_dir.is_dir() and test_dir.name.upper().startswith('TEST'):
                     test_name = test_dir.name.upper()  # test07 -> TEST07
                     output_test_dir = output_scenario_dir / test_name
-                    self._convert_compliance_test(test_dir, output_test_dir)
+                    self._convert_compliance_test(test_dir, output_test_dir, test_name)
                     print(f"  Copied compliance {test_name}")
         
         # Copy other files (measurements.json, mlperf.conf, user.conf, README.md)
@@ -119,7 +130,7 @@ class SubmissionConverter:
                 shutil.copy2(input_file, output_scenario_dir / file_name)
                 print(f"  Copied {file_name}")
     
-    def _convert_compliance_test(self, input_test_dir: Path, output_test_dir: Path):
+    def _convert_compliance_test(self, input_test_dir: Path, output_test_dir: Path, test_name: str):
         """Convert a compliance test directory."""
         output_test_dir.mkdir(parents=True, exist_ok=True)
         
@@ -136,9 +147,17 @@ class SubmissionConverter:
             output_accuracy_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(input_accuracy, output_accuracy_dir / 'mlperf_log_accuracy.json')
         
-        # Look for verify_accuracy.txt or similar files
-        for verify_file in input_test_dir.glob('*verify*.txt'):
-            shutil.copy2(verify_file, output_test_dir / verify_file.name)
+        # Copy test-specific verify files
+        if test_name == 'TEST07':
+            verify_file = input_test_dir / 'verify_accuracy.txt'
+            if verify_file.exists():
+                shutil.copy2(verify_file, output_test_dir / 'verify_accuracy.txt')
+                print(f"    Copied verify_accuracy.txt")
+        elif test_name == 'TEST09':
+            verify_file = input_test_dir / 'verify_output_len.txt'
+            if verify_file.exists():
+                shutil.copy2(verify_file, output_test_dir / 'verify_output_len.txt')
+                print(f"    Copied verify_output_len.txt")
     
     def _copy_directory(self, src: Path, dst: Path):
         """Copy a directory recursively."""
