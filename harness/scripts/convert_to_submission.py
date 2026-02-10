@@ -36,6 +36,12 @@ class SubmissionConverter:
         self.loadgen_mlperf_conf = script_dir / '..' / '..' / 'loadgen' / 'mlperf.conf'
         self.loadgen_mlperf_conf = self.loadgen_mlperf_conf.resolve()
         
+        # Find system JSON file and config files relative to script location
+        self.system_json_src = script_dir / '8xH200-LLM-D-Openshift.json'
+        self.harness_dir = script_dir.parent
+        self.offline_conf_src = self.harness_dir / 'offline.conf'
+        self.default_conf_src = self.harness_dir / 'default.conf'
+        
         if not self.input_dir.exists():
             raise ValueError(f"Input directory does not exist: {input_dir}")
     
@@ -66,6 +72,16 @@ class SubmissionConverter:
         systems_path.mkdir(parents=True, exist_ok=True)
         docs_path.mkdir(parents=True, exist_ok=True)
         
+        # Copy system JSON file to systems directory
+        if self.system_json_src.exists():
+            system_json_dest = systems_path / self.system_json_src.name
+            shutil.copy2(self.system_json_src, system_json_dest)
+            if self.debug:
+                print(f"  [DEBUG] Copied: {self.system_json_src} -> {system_json_dest}")
+            print(f"  Copied system JSON file to systems directory: {system_json_dest.name}")
+        else:
+            print(f"  Warning: System JSON file not found at {self.system_json_src}")
+        
         # Convert scenarios
         for scenario_dir in self.input_dir.iterdir():
             if not scenario_dir.is_dir():
@@ -78,6 +94,27 @@ class SubmissionConverter:
             
             print(f"Converting {scenario_name} scenario...")
             self._convert_scenario(scenario_dir, results_path / scenario_name)
+        
+        # Copy harness subdirectory contents to src subdirectory
+        harness_src = self.harness_dir
+        if harness_src.exists():
+            # Copy all contents from harness directory to src/model_name
+            for item in harness_src.iterdir():
+                # Skip certain directories/files that shouldn't be copied
+                if item.name in ['__pycache__', '.git', '.gitignore']:
+                    continue
+                dest = src_path / item.name
+                if item.is_dir():
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+                if self.debug:
+                    print(f"  [DEBUG] Copied: {item} -> {dest}")
+            print(f"  Copied harness directory contents to src/{self.model_name}")
+        else:
+            print(f"  Warning: Harness directory not found at {harness_src}")
         
         # Create placeholder files
         self._create_placeholder_files(src_path, systems_path, docs_path)
@@ -164,7 +201,7 @@ class SubmissionConverter:
                             print(f"  Warning: {test_name} subdirectory not found in {test_dir}")
         
         # Create required files in scenario output directory
-        self._create_scenario_files(output_scenario_dir)
+        self._create_scenario_files(output_scenario_dir, output_scenario_dir.name)
     
     def _convert_compliance_test(self, input_test_dir: Path, output_test_dir: Path, test_name: str):
         """Convert a compliance test directory."""
@@ -212,7 +249,7 @@ class SubmissionConverter:
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
     
-    def _create_scenario_files(self, output_scenario_dir: Path):
+    def _create_scenario_files(self, output_scenario_dir: Path, scenario_name: str):
         """Create required files in scenario output directory."""
         # Create measurements.json with default content
         measurements_json = output_scenario_dir / 'measurements.json'
@@ -241,13 +278,35 @@ class SubmissionConverter:
             else:
                 print(f"  Warning: mlperf.conf not found at {self.loadgen_mlperf_conf}")
         
-        # Create user.conf (empty file)
+        # Copy scenario-specific user.conf files
         user_conf = output_scenario_dir / 'user.conf'
-        if not user_conf.exists():
-            user_conf.touch()
-            if self.debug:
-                print(f"    [DEBUG] Created: {user_conf}")
-            print(f"  Created user.conf")
+        if scenario_name == 'Offline':
+            # Copy offline.conf to Offline subdirectory as user.conf
+            if self.offline_conf_src.exists():
+                shutil.copy2(self.offline_conf_src, user_conf)
+                if self.debug:
+                    print(f"    [DEBUG] Copied: {self.offline_conf_src} -> {user_conf}")
+                print(f"  Copied offline.conf as user.conf")
+            else:
+                print(f"  Warning: offline.conf not found at {self.offline_conf_src}, creating empty user.conf")
+                user_conf.touch()
+        elif scenario_name == 'Server':
+            # Copy default.conf to Server subdirectory as user.conf
+            if self.default_conf_src.exists():
+                shutil.copy2(self.default_conf_src, user_conf)
+                if self.debug:
+                    print(f"    [DEBUG] Copied: {self.default_conf_src} -> {user_conf}")
+                print(f"  Copied default.conf as user.conf")
+            else:
+                print(f"  Warning: default.conf not found at {self.default_conf_src}, creating empty user.conf")
+                user_conf.touch()
+        else:
+            # For other scenarios, create empty user.conf
+            if not user_conf.exists():
+                user_conf.touch()
+                if self.debug:
+                    print(f"    [DEBUG] Created: {user_conf}")
+                print(f"  Created user.conf")
         
         # Create README.md with basic content
         readme_md = output_scenario_dir / 'README.md'
