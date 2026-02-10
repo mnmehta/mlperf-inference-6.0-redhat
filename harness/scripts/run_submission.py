@@ -328,18 +328,56 @@ Examples:
             cmd.extend(['--mlflow-tag', final_tags])
         
         # Add user-conf for performance/accuracy tests (if not compliance)
-        if self.config['user_conf'] and test_mode in ['performance', 'accuracy'] and not audit_config_path:
-            if Path(self.config['user_conf']).exists():
-                cmd.extend(['--user-conf', self.config['user_conf']])
-            else:
-                print(f"WARNING: User config file not found: {self.config['user_conf']}, skipping --user-conf")
-        
-        # Add audit-override.cfg for compliance tests
+        # Priority: explicit user_conf > scenario-specific defaults
+        user_conf_to_use = None
         if audit_config_path:
-            if Path(self.config['audit_override_conf']).exists() or self.config['dry_run']:
-                cmd.extend(['--user-conf', self.config['audit_override_conf']])
+            # For compliance tests, use audit-override.conf (handled below)
+            pass
+        elif self.config['user_conf']:
+            # Use explicitly provided user_conf
+            user_conf_to_use = self.config['user_conf']
+        elif test_mode in ['performance', 'accuracy']:
+            # Use scenario-specific defaults
+            if scenario == 'Server':
+                # Server performance and accuracy use default.conf
+                default_conf = self.script_dir.parent / 'default.conf'
+                if default_conf.exists():
+                    user_conf_to_use = str(default_conf)
+            elif scenario == 'Offline':
+                if test_mode == 'performance':
+                    # Offline performance uses offline.conf
+                    offline_conf = self.script_dir.parent / 'offline.conf'
+                    if offline_conf.exists():
+                        user_conf_to_use = str(offline_conf)
+                elif test_mode == 'accuracy':
+                    # Offline accuracy uses default.conf
+                    default_conf = self.script_dir.parent / 'default.conf'
+                    if default_conf.exists():
+                        user_conf_to_use = str(default_conf)
+        
+        if user_conf_to_use:
+            if Path(user_conf_to_use).exists() or self.config['dry_run']:
+                cmd.extend(['--user-conf', user_conf_to_use])
             else:
-                print(f"WARNING: Audit override config file not found: {self.config['audit_override_conf']}, skipping --user-conf")
+                print(f"WARNING: User config file not found: {user_conf_to_use}, skipping --user-conf")
+        
+        # Add audit-override.cfg for compliance tests (except TEST09 which uses default.conf)
+        if audit_config_path:
+            # For TEST09 (both Server and Offline), use default.conf instead of audit-override.conf
+            if output_subdir.lower() == 'test09':
+                default_conf = self.script_dir.parent / 'default.conf'
+                if default_conf.exists() or self.config['dry_run']:
+                    cmd.extend(['--user-conf', str(default_conf)])
+            else:
+                # For other compliance tests, use audit-override.conf
+                if Path(self.config['audit_override_conf']).exists() or self.config['dry_run']:
+                    cmd.extend(['--user-conf', self.config['audit_override_conf']])
+                else:
+                    print(f"WARNING: Audit override config file not found: {self.config['audit_override_conf']}, skipping --user-conf")
+        
+        # Add offline-specific flags for offline performance and accuracy
+        if scenario == 'Offline' and test_mode in ['performance', 'accuracy']:
+            cmd.extend(['--offline-back-to-back', '--offline-async-concurrency'])
         
         # Add audit config for compliance tests
         if audit_config_path:
@@ -495,6 +533,7 @@ Examples:
             tags = f"{tags},qps:{self.config['server_target_qps']}"
         
         # Compliance tests use performance mode with audit.config, but output to "compliance" directory
+        # Note: For offline TEST09, --user-conf default.conf is added in build_command
         return self.run_test(scenario, 'performance', dataset_path, test_name.lower(),
                            description, tags, audit_config_path)
     
@@ -719,6 +758,12 @@ Examples:
     
     def run(self, args: List[str]):
         """Main run method."""
+        # Clean up audit.config at the beginning (both for --print-bash and normal execution)
+        audit_dest = self.harness_dir / 'audit.config'
+        if audit_dest.exists():
+            audit_dest.unlink()
+            print("Cleaned up audit.config from harness directory")
+        
         # Log dry-run mode
         if '--dry-run' in args:
             print("==========================================")
