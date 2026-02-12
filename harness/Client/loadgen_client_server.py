@@ -2,12 +2,14 @@
 
 This module contains the LoadGenServerClient class for Server scenario benchmarking.
 """
+from dataclasses import dataclass
 
+import time
 import array
 import asyncio
 import json
 import threading
-from typing import List
+from typing import List, Optional
 
 import aiohttp
 import numpy as np
@@ -21,6 +23,54 @@ except ImportError:
     )
 
 from .loadgen_client import LoadGenClient
+
+
+@dataclass
+class SchedTiming:
+    queue_start: int
+    func_start: Optional[int] = None
+    func_end: Optional[int] = None
+    stream_init: Optional[int] = None
+    stream_deinit: Optional[int] = None
+    request_start: Optional[int] = None
+    request_end: Optional[int] = None
+    first_token: Optional[int] = None
+    first_token_sent: Optional[int] = None
+
+    def queue_time(self) -> int:
+        if self.func_start is None:
+            raise ValueError("func_start is not set")
+        return self.func_start - self.queue_start
+
+    def func_time(self) -> int:
+        if self.func_start is None or self.func_end is None:
+            raise ValueError("func_start or func_end is not set")
+        return self.func_end - self.func_start
+
+    def stream_func_time(self) -> int:
+        if self.stream_init is None or self.stream_deinit is None:
+            raise ValueError("stream_init or stream_deinit is not set")
+        return self.stream_deinit - self.stream_init
+
+    def request_time(self) -> int:
+        if self.request_start is None or self.request_end is None:
+            raise ValueError("request_start or request_end is not set")
+        return self.request_end - self.request_start
+
+    def first_token_send_time(self) -> int:
+        if self.first_token is None or self.first_token_sent is None:
+            raise ValueError("first_token or first_token_sent is not set")
+        return self.first_token_sent - self.first_token
+
+    def preprocessing_time(self) -> int:
+        if self.func_start is None or self.request_start is None:
+            raise ValueError("func_start or request_start is not set")
+        return self.request_start - self.func_start
+
+    def postprocessing_time(self) -> int:
+        if self.request_end is None or self.func_end is None:
+            raise ValueError("request_end or func_end is not set")
+        return self.request_end - self.func_end
 
 
 class LoadGenServerClient(LoadGenClient):
@@ -118,13 +168,15 @@ class LoadGenServerClient(LoadGenClient):
                     # Get input IDs from dataset
                     input_ids_tensor = self.dataset.input_ids[qitem.index]
 
+                    timing = SchedTiming(queue_start=time.perf_counter_ns())
                     # Create async task for query processing
                     task = asyncio.create_task(
                         self._async_process_query(
                             input_ids_tensor,
                             qitem.id,
                             qitem.index,
-                            session
+                            session,
+                            timing,
                         )
                     )
                     active_tasks.add(task)
@@ -134,7 +186,7 @@ class LoadGenServerClient(LoadGenClient):
                 except Exception as e:
                     self.logger.error(f"Worker {worker_id}: Error in query processing: {e}")
     
-    async def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: aiohttp.ClientSession):
+    async def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: aiohttp.ClientSession, timing: SchedTiming):
         """Process a single query asynchronously via streaming API.
 
         Args:
@@ -143,6 +195,7 @@ class LoadGenServerClient(LoadGenClient):
             query_index: Index in dataset
             session: aiohttp.ClientSession to use for this request
         """
+        timing.func_start = time.perf_counter_ns()
         try:
             # Get input token count for tracking
             input_token_count = len(input_ids_tensor)
@@ -174,7 +227,9 @@ class LoadGenServerClient(LoadGenClient):
 
             # Process via streaming API (pass session)
             response_ids = [query_id]
-            output_tokens = await self._stream_api_vllm(decoded, response_ids, session)
+            timing.stream_init = time.perf_counter_ns()
+            output_tokens = await self._stream_api_vllm(decoded, response_ids, session, timing)
+            timing.stream_deinit = time.perf_counter_ns()
             
             n_tokens = len(output_tokens)
             self.logger.debug(f"Query {query_id}: {n_tokens} tokens")
@@ -212,6 +267,24 @@ class LoadGenServerClient(LoadGenClient):
             self.logger.error(f"Error processing query {query_id}: {e}")
             self._send_error_response_by_id(query_id)
 
+        timing.func_end = time.perf_counter_ns()
+        self.logger.info(
+            (
+                "Query %d processing complete: queue_time=%d ns, "
+                "func_time=%d ns, stream_func_time=%d ns, "
+                "request_time=%d ns, first_token_send_time=%d ns, "
+                "preprocessing_time=%d ns, postprocessing_time=%d ns"
+            ),
+            query_id,
+            timing.queue_time(),
+            timing.func_time(),
+            timing.stream_func_time(),
+            timing.request_time(),
+            timing.first_token_send_time(),
+            timing.preprocessing_time(),
+            timing.postprocessing_time(),
+        )
+
     def _submit_first_token_response(self, first_token_id: int | str, query_id: int):
         # Create first token response (single token)
         first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
@@ -220,7 +293,7 @@ class LoadGenServerClient(LoadGenClient):
         response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
         lg.FirstTokenComplete(response)
     
-    async def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: aiohttp.ClientSession) -> List[int]:
+    async def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: aiohttp.ClientSession, timing: SchedTiming) -> List[int]:
         """
         Stream API call to vLLM server with first token handling.
 
@@ -293,6 +366,7 @@ class LoadGenServerClient(LoadGenClient):
         max_retries = 3
 
         while True:
+            timing.request_start = time.perf_counter_ns()
             try:
                 async with session.post(
                     endpoint_url,
@@ -348,7 +422,9 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and delta_token_ids:
+                                            timing.first_token = time.perf_counter_ns()
                                             self._submit_first_token_response(delta_token_ids[0], response_ids[0])
+                                            timing.first_token_sent = time.perf_counter_ns()
                                             first = False
 
                                     elif chunk_token_ids is not None:
@@ -368,7 +444,9 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and token_ids_cache:
+                                            timing.first_token = time.perf_counter_ns()
                                             self._submit_first_token_response(token_ids_cache[0], response_ids[0])
+                                            timing.first_token_sent = time.perf_counter_ns()
                                             first = False
 
                                     else:
@@ -389,10 +467,13 @@ class LoadGenServerClient(LoadGenClient):
                                         if token_s != "":
                                             # Handle first token - call FirstTokenComplete directly (thread-safe)
                                             if first:
+                                                timing.first_token = time.perf_counter_ns()
                                                 if self.tokenizer:
                                                     token_ids = self.tokenizer.encode(token_s, add_special_tokens=False)
                                                     if token_ids:
                                                         self._submit_first_token_response(token_ids[0], response_ids[0])
+
+                                                timing.first_token_sent = time.perf_counter_ns()
                                                 first = False
 
                                             token_s_cache.append(str(token_s))
@@ -413,6 +494,8 @@ class LoadGenServerClient(LoadGenClient):
                                 except Exception as e:
                                     self.logger.debug(f"Error parsing stream line: {e}")
                                     continue
+
+                    timing.request_end = time.perf_counter_ns()
 
                     # DEBUG: Log what we accumulated
                     self.logger.debug(f"Streaming complete - using_token_ids={using_token_ids}, token_ids_cache length={len(token_ids_cache)}, token_s_cache length={len(token_s_cache)}")
