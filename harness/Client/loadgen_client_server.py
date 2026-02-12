@@ -4,13 +4,13 @@ This module contains the LoadGenServerClient class for Server scenario benchmark
 """
 
 import array
+import asyncio
 import json
 import threading
-import time
 from typing import List
 
+import aiohttp
 import numpy as np
-import requests
 
 try:
     import mlperf_loadgen as lg
@@ -39,6 +39,8 @@ class LoadGenServerClient(LoadGenClient):
         kwargs['scenario'] = 'Server'
         super().__init__(*args, **kwargs)
         self.query_counter = 0
+        # Track event loops for cleanup
+        self.worker_loops = {}
     
     def start_workers(self):
         """Start worker threads for async query processing."""
@@ -53,46 +55,102 @@ class LoadGenServerClient(LoadGenClient):
         
         # Create worker threads
         for j in range(self.num_workers):
-            worker = threading.Thread(target=self._process_queries_worker, daemon=True)
+            worker = threading.Thread(
+                target=self._process_queries_worker,
+                args=(j,),
+                daemon=True
+            )
             worker.start()
             self.worker_threads[j] = worker
 
         self.workers_started = True
         self.logger.info("Worker threads started")
     
-    def _process_queries_worker(self):
-        """Worker thread to process queued queries."""
-        while True:
-            try:
-                qitem = self.query_queue.get()
-                
-                if qitem is None:
-                    self.logger.debug("Worker thread exiting")
-                    break
-                
-                # Get input IDs from dataset
-                input_ids_tensor = self.dataset.input_ids[qitem.index]
-                
-                # Process query asynchronously (pass both input_ids, query_id, and index)
-                threading.Thread(
-                    target=self._async_process_query,
-                    args=(input_ids_tensor, qitem.id, qitem.index),
-                    daemon=True
-                ).start()
-                
-            except Exception as e:
-                self.logger.error(f"Error in query worker: {e}")
+    def _process_queries_worker(self, worker_id: int):
+        """Worker thread to process queued queries with asyncio."""
+        # Create a new event loop for this worker thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.worker_loops[worker_id] = loop
+
+        self.logger.debug(f"Worker {worker_id}: Started with asyncio event loop")
+
+        try:
+            # Run the async worker loop
+            loop.run_until_complete(self._async_worker_loop(worker_id, loop))
+        finally:
+            # Cleanup: cancel all pending tasks
+            self.logger.debug(f"Worker {worker_id}: Shutting down event loop")
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # Wait for all tasks to complete cancellation
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+            self.logger.debug(f"Worker {worker_id}: Cleanup complete")
+
+    async def _async_worker_loop(self, worker_id: int, loop: asyncio.AbstractEventLoop):
+        """Async worker loop that processes queries from the queue."""
+        # Create aiohttp session with connection pooling
+        connector = aiohttp.TCPConnector(limit=None)
+        timeout = aiohttp.ClientTimeout(total=None)  # No timeout for streaming
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            self.logger.debug(f"Worker {worker_id}: Created aiohttp session")
+
+            # Track active tasks for this worker
+            active_tasks = set()
+
+            while True:
+                # Get query from queue (blocking call in thread)
+                # We need to run this in executor since queue.get() is blocking
+                try:
+                    qitem = await loop.run_in_executor(None, self.query_queue.get)
+
+                    if qitem is None:
+                        self.logger.debug(f"Worker {worker_id}: Received stop signal, waiting for active tasks")
+                        # Wait for all active tasks to complete
+                        if active_tasks:
+                            await asyncio.gather(*active_tasks, return_exceptions=True)
+                        break
+
+                    # Get input IDs from dataset
+                    input_ids_tensor = self.dataset.input_ids[qitem.index]
+
+                    # Create async task for query processing
+                    task = asyncio.create_task(
+                        self._async_process_query(
+                            input_ids_tensor,
+                            qitem.id,
+                            qitem.index,
+                            session
+                        )
+                    )
+                    active_tasks.add(task)
+                    # Remove task from active set when done
+                    task.add_done_callback(active_tasks.discard)
+
+                except Exception as e:
+                    self.logger.error(f"Worker {worker_id}: Error in query processing: {e}")
     
-    def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int):
-        """Process a single query asynchronously via streaming API."""
+    async def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: aiohttp.ClientSession):
+        """Process a single query asynchronously via streaming API.
+
+        Args:
+            input_ids_tensor: Input token IDs
+            query_id: Query ID for LoadGen
+            query_index: Index in dataset
+            session: aiohttp.ClientSession to use for this request
+        """
         try:
             # Get input token count for tracking
             input_token_count = len(input_ids_tensor)
-            
+
             # Use text_input directly if available (same logic as LoadGenOfflineClient)
             # Otherwise decode from input_ids
-            if (hasattr(self.dataset, 'input') and 
-                len(self.dataset.input) > query_index and 
+            if (hasattr(self.dataset, 'input') and
+                len(self.dataset.input) > query_index and
                 self.dataset.input[query_index]):
                 # Use text_input directly (no detokenization needed)
                 decoded = self.dataset.input[query_index]
@@ -108,15 +166,15 @@ class LoadGenServerClient(LoadGenClient):
             else:
                 decoded = " ".join([str(t) for t in input_ids_tensor])
                 self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id}: No tokenizer available, using string representation of input_ids")
-            
+
             # Log the decoded text (first 200 chars) for debugging
             text_preview = decoded[:200] + "..." if len(decoded) > 200 else decoded
             self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Decoded text preview: {text_preview}")
             self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Full decoded text length: {len(decoded)} chars, input_ids length: {len(input_ids_tensor)} tokens")
-            
-            # Process via streaming API
+
+            # Process via streaming API (pass session)
             response_ids = [query_id]
-            output_tokens = self._stream_api_vllm(decoded, response_ids)
+            output_tokens = await self._stream_api_vllm(decoded, response_ids, session)
             
             n_tokens = len(output_tokens)
             self.logger.debug(f"Query {query_id}: {n_tokens} tokens")
@@ -153,15 +211,24 @@ class LoadGenServerClient(LoadGenClient):
         except Exception as e:
             self.logger.error(f"Error processing query {query_id}: {e}")
             self._send_error_response_by_id(query_id)
+
+    def _submit_first_token_response(self, first_token_id: int | str, query_id: int):
+        # Create first token response (single token)
+        first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
+        response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
+        bi = response_data.buffer_info()
+        response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
+        lg.FirstTokenComplete(response)
     
-    def _stream_api_vllm(self, input_text: str, response_ids: List[int]) -> List[int]:
+    async def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: aiohttp.ClientSession) -> List[int]:
         """
         Stream API call to vLLM server with first token handling.
-        
+
         Args:
             input_text: Input text prompt
             response_ids: List of response IDs (for first token handling)
-        
+            session: aiohttp.ClientSession to use for this request
+
         Returns:
             List of output token IDs
         """
@@ -227,26 +294,25 @@ class LoadGenServerClient(LoadGenClient):
 
         while True:
             try:
-                s = requests.Session()
-                with s.post(
+                async with session.post(
                     endpoint_url,
                     headers=headers,
                     json=json_data,
-                    verify=False,
-                    stream=True,
-                    timeout=None
+                    ssl=False
                 ) as resp:
-                    if resp.status_code != 200:
+                    if resp.status != 200:
                         retry_count += 1
                         if retry_count <= max_retries:
-                            self.logger.warning(f"API server returned status {resp.status_code}: {resp.text}. Retry {retry_count}/{max_retries}")
-                            time.sleep(0.05)  # Wait 50ms before retry
+                            self.logger.warning(f"API server returned status {resp.status}. Retry {retry_count}/{max_retries}")
+                            await asyncio.sleep(0.05)  # Wait 50ms before retry
                             continue
                         else:
-                            self.logger.error(f"API server returned status {resp.status_code}: {resp.text}. Max retries ({max_retries}) exceeded.")
+                            error_text = await resp.text()
+                            self.logger.error(f"API server returned status {resp.status}: {error_text}. Max retries ({max_retries}) exceeded.")
                             break
 
-                    for line in resp.iter_lines():
+                    # Stream response line by line
+                    async for line in resp.content:
                         if line:
                             decoded = line.decode("utf-8")
                             
@@ -282,14 +348,7 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and delta_token_ids:
-                                            first_token_id = delta_token_ids[0]
-                                            query_id = response_ids[0]
-                                            # Create first token response (single token)
-                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                            bi = response_data.buffer_info()
-                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                            lg.FirstTokenComplete(response)
+                                            self._submit_first_token_response(delta_token_ids[0], response_ids[0])
                                             first = False
 
                                     elif chunk_token_ids is not None:
@@ -309,14 +368,7 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and token_ids_cache:
-                                            first_token_id = token_ids_cache[0]
-                                            query_id = response_ids[0]
-                                            # Create first token response (single token)
-                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                            bi = response_data.buffer_info()
-                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                            lg.FirstTokenComplete(response)
+                                            self._submit_first_token_response(token_ids_cache[0], response_ids[0])
                                             first = False
 
                                     else:
@@ -340,14 +392,7 @@ class LoadGenServerClient(LoadGenClient):
                                                 if self.tokenizer:
                                                     token_ids = self.tokenizer.encode(token_s, add_special_tokens=False)
                                                     if token_ids:
-                                                        first_token_id = token_ids[0]
-                                                        query_id = response_ids[0]
-                                                        # Create first token response (single token)
-                                                        first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                                        response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                                        bi = response_data.buffer_info()
-                                                        response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                                        lg.FirstTokenComplete(response)
+                                                        self._submit_first_token_response(token_ids[0], response_ids[0])
                                                 first = False
 
                                             token_s_cache.append(str(token_s))
@@ -368,8 +413,6 @@ class LoadGenServerClient(LoadGenClient):
                                 except Exception as e:
                                     self.logger.debug(f"Error parsing stream line: {e}")
                                     continue
-                    
-                    s.close()
 
                     # DEBUG: Log what we accumulated
                     self.logger.debug(f"Streaming complete - using_token_ids={using_token_ids}, token_ids_cache length={len(token_ids_cache)}, token_s_cache length={len(token_s_cache)}")
@@ -397,10 +440,9 @@ class LoadGenServerClient(LoadGenClient):
                         return [1, 2, 3]
 
                     break
-                    
+
             except Exception as e:
                 self.logger.error(f"Connection failure: {e}")
-                s.close()
                 # Return fallback tokens
                 return [1, 2, 3]
         
@@ -452,17 +494,22 @@ class LoadGenServerClient(LoadGenClient):
         """Stop worker threads gracefully."""
         if not self.workers_started:
             return
-        
+
         self.logger.info("Stopping worker threads...")
-        
+
         # Signal workers to stop
         for _ in range(self.num_workers):
             self.query_queue.put(None)
-        
-        # Wait for workers to finish
+
+        # Wait for workers to finish (event loops will be cleaned up in their finally blocks)
         for worker in self.worker_threads:
             if worker and worker.is_alive():
-                worker.join(timeout=5)
+                worker.join(timeout=10)
+
+        # Cleanup: clear event loops tracking
+        if self.worker_loops:
+            self.logger.debug(f"Clearing {len(self.worker_loops)} worker event loops")
+            self.worker_loops.clear()
 
         self.workers_started = False
         self.logger.info("Worker threads stopped")
