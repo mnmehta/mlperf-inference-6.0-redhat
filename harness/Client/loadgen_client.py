@@ -241,9 +241,7 @@ class LoadGenClient(BaseClient):
         # Server scenario specific components (for async processing)
         self.num_workers = config.get('num_workers', 1) if config else 1
         self.worker_threads: List[Optional[threading.Thread]] = []
-        self.first_token_queue: Optional[queue.Queue] = None
         self.query_queue: Optional[queue.Queue] = None
-        self.ft_response_thread: Optional[threading.Thread] = None
         self.workers_started = False
         
         # Initialize endpoints (for load balancing, use primary URL for endpoints)
@@ -411,7 +409,6 @@ class LoadGenClient(BaseClient):
     def _initialize_server_components(self):
         """Initialize components for server scenario with async processing."""
         self.worker_threads = [None] * self.num_workers
-        self.first_token_queue = queue.Queue()
         self.query_queue = queue.Queue()
         self.workers_started = False
     
@@ -1650,36 +1647,9 @@ class LoadGenServerClient(LoadGenClient):
             worker = threading.Thread(target=self._process_queries_worker, daemon=True)
             worker.start()
             self.worker_threads[j] = worker
-        
-        # Create first token response thread
-        self.ft_response_thread = threading.Thread(target=self._process_first_tokens_worker, daemon=True)
-        self.ft_response_thread.start()
-        
+
         self.workers_started = True
         self.logger.info("Worker threads started")
-    
-    def _process_first_tokens_worker(self):
-        """Worker thread to process first token responses."""
-        while True:
-            try:
-                first_token_item = self.first_token_queue.get()
-                
-                if first_token_item is None:
-                    self.logger.info("Exiting first token response thread")
-                    break
-                
-                first_token_id, response_id = first_token_item
-                
-                # Create first token response (single token)
-                # Convert to list for array creation
-                first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                bi = response_data.buffer_info()
-                response = [lg.QuerySampleResponse(response_id, bi[0], bi[1])]
-                lg.FirstTokenComplete(response)
-                
-            except Exception as e:
-                self.logger.error(f"Error in first token worker: {e}")
     
     def _process_queries_worker(self):
         """Worker thread to process queued queries."""
@@ -1750,7 +1720,7 @@ class LoadGenServerClient(LoadGenClient):
                 self.logger.warning(f"Low token count for query {query_id}: {n_tokens}")
 
             # IMPORTANT: Exclude first token from QuerySamplesComplete
-            # The first token was already sent via FirstTokenComplete (line ~1900)
+            # The first token was already sent via FirstTokenComplete during streaming
             # To match reference implementation (server_sut.py line 344-349)
             if len(output_tokens) > 1:
                 # Exclude first token - it was already sent to FirstTokenComplete
@@ -1843,10 +1813,9 @@ class LoadGenServerClient(LoadGenClient):
         token_ids_cache = []  # For token ID accumulation (preferred)
         using_token_ids = None  # Track which method we're using
         first = True
-
-        retries = 0
+        retry_count = 0
         max_retries = 3
-        
+
         while True:
             try:
                 s = requests.Session()
@@ -1859,14 +1828,15 @@ class LoadGenServerClient(LoadGenClient):
                     timeout=None
                 ) as resp:
                     if resp.status_code != 200:
-                        if retries <= max_retries :
+                        retry_count += 1
+                        if retry_count <= max_retries:
                             self.logger.warning(f"API server returned status {resp.status_code}: {resp.text}. Retry {retry_count}/{max_retries}")
                             time.sleep(0.05)  # Wait 50ms before retry
                             continue
-                        else :
-                            self.logger.error(f"API server returned status {resp.status_code} Exceeded: {resp.text}. Retry {retry_count}/{max_retries}")
+                        else:
+                            self.logger.error(f"API server returned status {resp.status_code}: {resp.text}. Max retries ({max_retries}) exceeded.")
                             break
-                    
+
                     for line in resp.iter_lines():
                         if line:
                             decoded = line.decode("utf-8")
@@ -1901,9 +1871,16 @@ class LoadGenServerClient(LoadGenClient):
 
                                         token_ids_cache.extend(delta_token_ids)
 
-                                        # Handle first token
+                                        # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and delta_token_ids:
-                                            self.first_token_queue.put((delta_token_ids[0], response_ids[0]))
+                                            first_token_id = delta_token_ids[0]
+                                            query_id = response_ids[0]
+                                            # Create first token response (single token)
+                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
+                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
+                                            bi = response_data.buffer_info()
+                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
+                                            lg.FirstTokenComplete(response)
                                             first = False
 
                                     elif chunk_token_ids is not None:
@@ -1921,9 +1898,16 @@ class LoadGenServerClient(LoadGenClient):
                                             # Looks like individual tokens - extend cache
                                             token_ids_cache.extend(chunk_token_ids)
 
-                                        # Handle first token
+                                        # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and token_ids_cache:
-                                            self.first_token_queue.put((token_ids_cache[0], response_ids[0]))
+                                            first_token_id = token_ids_cache[0]
+                                            query_id = response_ids[0]
+                                            # Create first token response (single token)
+                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
+                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
+                                            bi = response_data.buffer_info()
+                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
+                                            lg.FirstTokenComplete(response)
                                             first = False
 
                                     else:
@@ -1942,12 +1926,19 @@ class LoadGenServerClient(LoadGenClient):
                                             token_s = choice_data.get("text", "")
 
                                         if token_s != "":
-                                            # Handle first token
+                                            # Handle first token - call FirstTokenComplete directly (thread-safe)
                                             if first:
                                                 if self.tokenizer:
                                                     token_ids = self.tokenizer.encode(token_s, add_special_tokens=False)
                                                     if token_ids:
-                                                        self.first_token_queue.put((token_ids[0], response_ids[0]))
+                                                        first_token_id = token_ids[0]
+                                                        query_id = response_ids[0]
+                                                        # Create first token response (single token)
+                                                        first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
+                                                        response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
+                                                        bi = response_data.buffer_info()
+                                                        response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
+                                                        lg.FirstTokenComplete(response)
                                                 first = False
 
                                             token_s_cache.append(str(token_s))
@@ -2063,14 +2054,7 @@ class LoadGenServerClient(LoadGenClient):
         for worker in self.worker_threads:
             if worker and worker.is_alive():
                 worker.join(timeout=5)
-        
-        # Signal first token thread to stop
-        if self.first_token_queue:
-            self.first_token_queue.put(None)
-        
-        if self.ft_response_thread and self.ft_response_thread.is_alive():
-            self.ft_response_thread.join(timeout=5)
-        
+
         self.workers_started = False
         self.logger.info("Worker threads stopped")
     

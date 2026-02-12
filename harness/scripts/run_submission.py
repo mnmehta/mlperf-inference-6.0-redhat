@@ -340,8 +340,6 @@ Examples:
         # Add server-target-qps for Server scenario
         if scenario == 'Server':
             cmd.extend(['--server-target-qps', self.config['server_target_qps']])
-            cmd.extend(['--server-max-concurrent', '6396'])
-            cmd.extend(['--num-workers', '1'])
         
         # Add user-conf for performance/accuracy tests (if not compliance)
         # Priority: explicit user_conf > scenario-specific defaults

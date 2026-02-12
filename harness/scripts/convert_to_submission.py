@@ -95,26 +95,16 @@ class SubmissionConverter:
             print(f"Converting {scenario_name} scenario...")
             self._convert_scenario(scenario_dir, results_path / scenario_name)
         
-        # Copy harness subdirectory contents to src subdirectory
-        harness_src = self.harness_dir
-        if harness_src.exists():
-            # Copy all contents from harness directory to src/model_name
-            for item in harness_src.iterdir():
-                # Skip certain directories/files that shouldn't be copied
-                if item.name in ['__pycache__', '.git', '.gitignore']:
-                    continue
-                dest = src_path / item.name
-                if item.is_dir():
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-                if self.debug:
-                    print(f"  [DEBUG] Copied: {item} -> {dest}")
-            print(f"  Copied harness directory contents to src/{self.model_name}")
+        # Copy harness_main.py to src subdirectory
+        harness_main_src = self.harness_dir / 'harness_main.py'
+        if harness_main_src.exists():
+            harness_main_dest = src_path / 'harness_main.py'
+            shutil.copy2(harness_main_src, harness_main_dest)
+            if self.debug:
+                print(f"  [DEBUG] Copied: {harness_main_src} -> {harness_main_dest}")
+            print(f"  Copied harness_main.py to src/{self.model_name}")
         else:
-            print(f"  Warning: Harness directory not found at {harness_src}")
+            print(f"  Warning: harness_main.py not found at {harness_main_src}")
         
         # Create placeholder files
         self._create_placeholder_files(src_path, systems_path, docs_path)
