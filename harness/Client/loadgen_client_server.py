@@ -7,6 +7,7 @@ import array
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import numpy as np
@@ -39,6 +40,8 @@ class LoadGenServerClient(LoadGenClient):
         kwargs['scenario'] = 'Server'
         super().__init__(*args, **kwargs)
         self.query_counter = 0
+        # Track executors for cleanup
+        self.worker_executors = {}
     
     def start_workers(self):
         """Start worker threads for async query processing."""
@@ -53,46 +56,78 @@ class LoadGenServerClient(LoadGenClient):
         
         # Create worker threads
         for j in range(self.num_workers):
-            worker = threading.Thread(target=self._process_queries_worker, daemon=True)
+            worker = threading.Thread(
+                target=self._process_queries_worker,
+                args=(j,),
+                daemon=True
+            )
             worker.start()
             self.worker_threads[j] = worker
 
         self.workers_started = True
         self.logger.info("Worker threads started")
     
-    def _process_queries_worker(self):
-        """Worker thread to process queued queries."""
-        while True:
-            try:
-                qitem = self.query_queue.get()
-                
-                if qitem is None:
-                    self.logger.debug("Worker thread exiting")
-                    break
-                
-                # Get input IDs from dataset
-                input_ids_tensor = self.dataset.input_ids[qitem.index]
-                
-                # Process query asynchronously (pass both input_ids, query_id, and index)
-                threading.Thread(
-                    target=self._async_process_query,
-                    args=(input_ids_tensor, qitem.id, qitem.index),
-                    daemon=True
-                ).start()
-                
-            except Exception as e:
-                self.logger.error(f"Error in query worker: {e}")
+    def _process_queries_worker(self, worker_id: int):
+        """Worker thread to process queued queries with ThreadPoolExecutor."""
+        # Create ThreadPoolExecutor for this worker
+        # Each worker manages its own executor with configurable concurrency
+        max_concurrent = getattr(self, 'max_concurrent', None)
+        executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix=f"async-worker-{worker_id}")
+        self.worker_executors[worker_id] = executor
+
+        # Create dedicated session for this worker
+        # NOTE: Sessions are not entirely thread-safe but should be fine for our use case
+        session = requests.Session()
+
+        self.logger.debug(f"Worker {worker_id}: Started with executor (max_workers={max_concurrent})")
+
+        try:
+            while True:
+                try:
+                    qitem = self.query_queue.get()
+
+                    if qitem is None:
+                        self.logger.debug(f"Worker {worker_id}: Received stop signal, exiting")
+                        break
+
+                    # Get input IDs from dataset
+                    input_ids_tensor = self.dataset.input_ids[qitem.index]
+
+                    # Submit query processing to executor (with session)
+                    executor.submit(
+                        self._async_process_query,
+                        input_ids_tensor,
+                        qitem.id,
+                        qitem.index,
+                        session
+                    )
+
+                except Exception as e:
+                    self.logger.error(f"Worker {worker_id}: Error in query processing: {e}")
+        finally:
+            # Cleanup executor and session when worker exits
+            self.logger.debug(f"Worker {worker_id}: Shutting down executor")
+            executor.shutdown(wait=True, cancel_futures=False)
+            session.close()
+            self.logger.debug(f"Worker {worker_id}: Cleanup complete")
     
-    def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int):
-        """Process a single query asynchronously via streaming API."""
+    def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: requests.Session):
+        """Process a single query asynchronously via streaming API.
+
+        Args:
+            input_ids_tensor: Input token IDs
+            query_id: Query ID for LoadGen
+            query_index: Index in dataset
+            session: requests.Session to use for this request
+        """
         try:
             # Get input token count for tracking
             input_token_count = len(input_ids_tensor)
-            
+
             # Use text_input directly if available (same logic as LoadGenOfflineClient)
             # Otherwise decode from input_ids
-            if (hasattr(self.dataset, 'input') and 
-                len(self.dataset.input) > query_index and 
+            if (hasattr(self.dataset, 'input') and
+                len(self.dataset.input) > query_index and
                 self.dataset.input[query_index]):
                 # Use text_input directly (no detokenization needed)
                 decoded = self.dataset.input[query_index]
@@ -108,15 +143,15 @@ class LoadGenServerClient(LoadGenClient):
             else:
                 decoded = " ".join([str(t) for t in input_ids_tensor])
                 self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id}: No tokenizer available, using string representation of input_ids")
-            
+
             # Log the decoded text (first 200 chars) for debugging
             text_preview = decoded[:200] + "..." if len(decoded) > 200 else decoded
             self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Decoded text preview: {text_preview}")
             self.logger.debug(f"LoadGenServerClient._async_process_query() - Query {query_id} (index {query_index}): Full decoded text length: {len(decoded)} chars, input_ids length: {len(input_ids_tensor)} tokens")
-            
-            # Process via streaming API
+
+            # Process via streaming API (pass session)
             response_ids = [query_id]
-            output_tokens = self._stream_api_vllm(decoded, response_ids)
+            output_tokens = self._stream_api_vllm(decoded, response_ids, session)
             
             n_tokens = len(output_tokens)
             self.logger.debug(f"Query {query_id}: {n_tokens} tokens")
@@ -154,7 +189,7 @@ class LoadGenServerClient(LoadGenClient):
             self.logger.error(f"Error processing query {query_id}: {e}")
             self._send_error_response_by_id(query_id)
 
-    def _submit_first_token_response(self, first_token_id: int, query_id: int):
+    def _submit_first_token_response(self, first_token_id: int | str, query_id: int):
         # Create first token response (single token)
         first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
         response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
@@ -162,14 +197,15 @@ class LoadGenServerClient(LoadGenClient):
         response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
         lg.FirstTokenComplete(response)
     
-    def _stream_api_vllm(self, input_text: str, response_ids: List[int]) -> List[int]:
+    def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: requests.Session) -> List[int]:
         """
         Stream API call to vLLM server with first token handling.
-        
+
         Args:
             input_text: Input text prompt
             response_ids: List of response IDs (for first token handling)
-        
+            session: requests.Session to use for this request
+
         Returns:
             List of output token IDs
         """
@@ -235,8 +271,7 @@ class LoadGenServerClient(LoadGenClient):
 
         while True:
             try:
-                s = requests.Session()
-                with s.post(
+                with session.post(
                     endpoint_url,
                     headers=headers,
                     json=json_data,
@@ -355,8 +390,6 @@ class LoadGenServerClient(LoadGenClient):
                                 except Exception as e:
                                     self.logger.debug(f"Error parsing stream line: {e}")
                                     continue
-                    
-                    s.close()
 
                     # DEBUG: Log what we accumulated
                     self.logger.debug(f"Streaming complete - using_token_ids={using_token_ids}, token_ids_cache length={len(token_ids_cache)}, token_s_cache length={len(token_s_cache)}")
@@ -384,10 +417,9 @@ class LoadGenServerClient(LoadGenClient):
                         return [1, 2, 3]
 
                     break
-                    
+
             except Exception as e:
                 self.logger.error(f"Connection failure: {e}")
-                s.close()
                 # Return fallback tokens
                 return [1, 2, 3]
         
@@ -439,17 +471,27 @@ class LoadGenServerClient(LoadGenClient):
         """Stop worker threads gracefully."""
         if not self.workers_started:
             return
-        
+
         self.logger.info("Stopping worker threads...")
-        
+
         # Signal workers to stop
         for _ in range(self.num_workers):
             self.query_queue.put(None)
-        
-        # Wait for workers to finish
+
+        # Wait for workers to finish (executors will be cleaned up in their finally blocks)
         for worker in self.worker_threads:
             if worker and worker.is_alive():
-                worker.join(timeout=5)
+                worker.join(timeout=10)
+
+        # Defensive cleanup: shutdown any remaining executors
+        if self.worker_executors:
+            for worker_id, executor in list(self.worker_executors.items()):
+                try:
+                    self.logger.debug(f"Force-shutting down executor for worker {worker_id}")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception as e:
+                    self.logger.warning(f"Error shutting down executor for worker {worker_id}: {e}")
+            self.worker_executors.clear()
 
         self.workers_started = False
         self.logger.info("Worker threads stopped")
