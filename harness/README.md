@@ -1,859 +1,410 @@
-# MLPerf Inference Harness
+# MLPerf Inference Harness - GPT-OSS-120B
 
-A unified harness framework for managing inference servers and clients in MLPerf Inference benchmarks.
+This guide provides instructions for setting up and running MLPerf Inference benchmarks for GPT-OSS-120B using llm-d and the harness framework.
 
-## Directory Structure
+## Table of Contents
 
+1. [LLM-D Setup](#llm-d-setup)
+2. [Client Pod Setup](#client-pod-setup)
+3. [Running Tests with run_submission.py](#running-tests-with-run_submissionpy)
+4. [Creating Submission](#creating-submission)
+
+## LLM-D Setup
+
+The LLM-D (Large Language Model Deployment) framework is used to deploy the GPT-OSS-120B model server in Kubernetes.
+
+### Prerequisites
+
+- Kubernetes cluster with Istio 1.28.1 GA or later
+- At least 128 CPUs available on worker nodes (16 CPUs × 8 replicas)
+- 8 NVIDIA GPUs available
+- HuggingFace token secret `llm-d-hf-token` created in your namespace
+- Model artifacts available at the PVC path specified in override files
+
+### Deployment Steps
+
+1. **Navigate to the setup directory:**
+   ```bash
+   cd setup/llm-d/
+   ```
+
+2. **Deploy GPT-OSS-120B in server mode:**
+   ```bash
+   bash deploy_gptoss120b_v050.sh server
+   ```
+
+   For offline mode:
+   ```bash
+   bash deploy_gptoss120b_v050.sh offline
+   ```
+
+   The script will:
+   - Clone the llm-d repository (if not already present)
+   - Check out v0.5.0
+   - Copy override files to the correct location
+   - Deploy infrastructure, GAIE, and model service in order
+   - Show pod status after deployment
+
+3. **Verify deployment:**
+   ```bash
+   # Check pod status
+   kubectl get pods -n llm-d-bench -l app.kubernetes.io/instance=ms-inference-scheduling
+   
+   # Watch pod status
+   kubectl get pods -n llm-d-bench -l app.kubernetes.io/instance=ms-inference-scheduling -w
+   
+   # Check logs
+   kubectl logs -n llm-d-bench -l app.kubernetes.io/component=decode --tail=50 -f
+   ```
+
+4. **Get the API server URL:**
+   ```bash
+   # Get the service URL
+   kubectl get svc -n llm-d-bench
+   ```
+
+   The API server URL will typically be in the format:
+   ```
+   http://<service-name>.<namespace>.svc.cluster.local:8000
+   Eg http://infra-inference-scheduling-inference-gateway-istio.llm-d-bench.svc.cluster.local/
+   ```
+
+### Environment Variables
+
+You can customize the deployment with environment variables:
+
+- `LLMD_DIR` - Where to clone llm-d (default: `/tmp/llm-d`)
+- `NAMESPACE` - Kubernetes namespace (default: `llm-d-bench`)
+- `RELEASE_NAME_POSTFIX` - Helm release postfix (default: `inference-scheduling`)
+
+Example with custom settings:
+```bash
+NAMESPACE=my-namespace LLMD_DIR=/home/user/llm-d bash deploy_gptoss120b_v050.sh server
 ```
-harness/
-├── backendserver/          # Backend inference server management
-│   ├── inference_server.py  # Base InferenceServer class and implementations
-│   ├── README_inference_server.md
-│   ├── example_server_config.yaml
-│   └── tests/              # Server tests
-├── Client/                 # Client implementations
-│   ├── base_client.py      # Base client class
-│   ├── loadgen_client.py   # LoadGen client (Offline/Server)
-│   └── __init__.py
-├── data/                   # Dataset processing
-│   ├── dataset_processor.py  # Generic dataset processor
-│   └── __init__.py
-├── metrics/                # Metrics collection and visualization
-│   ├── vllm_metrics_collector.py
-│   ├── vllm_metrics_visualizer.py
-│   └── test/               # Metrics tests
-├── harness_llama3.1_8b.py # Example harness for Llama 3.1 8B
-└── README.md               # This file
-```
 
-## Components
+## Client Pod Setup
 
-### 1. Backend Server (`backendserver/`)
+The client pod is where the MLPerf harness tests will run. This pod needs to be able to connect to the LLM-D API server.
 
-Manages inference servers (vLLM, SGLang, etc.) with:
-- Start/stop functionality
-- Heartbeat monitoring
-- Process cleanup verification (debug mode)
-- Profiling support (nsys, PyTorch, AMD)
-- YAML configuration support
+### Setting Up Environment Variables
 
-See `backendserver/README_inference_server.md` for details.
+1. **Source the environment variables script:**
+   ```bash
+   cd harness/scripts
+   source set_env_vars.sh
+   ```
 
-### 2. Clients (`Client/`)
+2. **Set required environment variables:**
+   ```bash
+   export DATASET_DIR=/path/to/datasets
+   export PERF_DATASET=/path/to/perf/perf_eval_ref.parquet
+   export ACC_DATASET=/path/to/acc/acc_eval_ref.parquet
+   export COMPLIANCE_DATASET=/path/to/acc/acc_eval_compliance_gpqa.parquet
+   export OUTPUT_DIR=./harness_output
+   export API_SERVER_URL=http://<service-name>.llm-d-bench.svc.cluster.local:8000
+   export AWS_ACCESS_KEY_ID=<your-aws-key>
+   export AWS_SECRET_ACCESS_KEY=<your-aws-secret>
+   export MLFLOW_TRACKING_URI=http://mlflow-server:5000
+   export MLFLOW_EXPERIMENT_NAME=<your-experiment-name>
+   export SERVER_TARGET_QPS=3  # For Server scenario
+   ```
 
-Client implementations for different benchmarking frameworks:
+3. **Verify environment variables:**
+   ```bash
+   # Print current configuration
+   print_env_vars
+   
+   # Validate required variables
+   validate_env_vars
+   ```
 
-#### Base Client (`base_client.py`)
-- Abstract base class for all clients
-- Standard interface: `initialize()`, `run()`, `cleanup()`
-- Context manager support
+### Additional Configuration
 
-#### LoadGen Client (`loadgen_client.py`)
-- MLPerf LoadGen integration
-- **Offline Client**: Batch processing scenario
-- **Server Client**: Real-time query processing scenario
-- Supports API server mode (remote inference)
-- Handles dataset loading and query processing
+- `HF_HOME` - HuggingFace home directory (if needed)
+- `MODEL_CATEGORY` - Model category (default: `gpt-oss-120b`)
+- `MODEL` - Model name (default: `openai/gpt-oss-120b`)
+- `BACKEND` - Backend type (default: `vllm`)
+- `LG_MODEL_NAME` - LoadGen model name (default: `gpt-oss-120b`)
 
-### 3. Dataset Processing (`data/`)
+## Running Tests with run_submission.py
 
-Generic dataset processor that handles:
-- **JSON files**: Single objects or arrays
-- **Pickle files**: DataFrames or dictionaries
-- **Pandas DataFrames**: Direct DataFrame objects
-- **CSV files**: Via pandas
+The `run_submission.py` script is used to run MLPerf Inference tests. After setting up LLM-D correctly, navigate to the harness directory and run the tests.
 
-Converts to standardized format:
-- `input`: List of input text strings
-- `input_ids`: List of tokenized input IDs
-- `input_lens`: List of input lengths
-- `targets`: List of output/targets
+### Prerequisites
 
-## Usage
+1. **LLM-D server must be deployed and running** (see [LLM-D Setup](#llm-d-setup))
+2. **Navigate to harness directory:**
+   ```bash
+   cd harness
+   ```
 
-### New Model Support
+3. **Set up environment variables using set_env_vars.sh:**
+   ```bash
+   # Source the environment variables script
+   source scripts/set_env_vars.sh
+   
+   # Set required environment variables
+   export DATASET_DIR=/path/to/datasets
+   export PERF_DATASET=/path/to/perf/perf_eval_ref.parquet
+   export ACC_DATASET=/path/to/acc/acc_eval_ref.parquet
+   export COMPLIANCE_DATASET=/path/to/acc/acc_eval_compliance_gpqa.parquet
+   export OUTPUT_DIR=./harness_output
+   export API_SERVER_URL=http://<service-name>.llm-d-bench.svc.cluster.local:8000
+   export AWS_ACCESS_KEY_ID=<your-aws-key>
+   export AWS_SECRET_ACCESS_KEY=<your-aws-secret>
+   export MLFLOW_TRACKING_URI=http://mlflow-server:5000
+   export MLFLOW_EXPERIMENT_NAME=<your-experiment-name>
+   export SERVER_TARGET_QPS=3  # For Server scenario
+   
+   # Verify environment variables are set correctly
+   print_env_vars
+   validate_env_vars
+   ```
 
-The harness now supports:
-- **GPT-OSS-120B**: Large language model with SGLang backend
-- **Qwen3VL**: Multimodal vision-language model with vLLM backend
+4. **⚠️ IMPORTANT: Check for audit.config before running tests:**
+   ```bash
+   # Check if audit.config exists in harness directory (should be removed)
+   if [ -f "audit.config" ]; then
+       echo "WARNING: audit.config found in harness directory. Removing it..."
+       rm -f audit.config
+   fi
+   ```
+   
+   The `run_submission.py` script automatically cleans up `audit.config` at the beginning, but it's good practice to verify it's not present before starting tests.
 
-See [docs/gpt-oss-120b-and-qwen3vl-support.md](docs/gpt-oss-120b-and-qwen3vl-support.md) for detailed documentation and examples.
+### Running Offline Tests
 
-### Quick Start Examples
-
-#### Example 1: Basic Usage with Model-Specific Harness
+To run all offline tests (performance, accuracy, and compliance):
 
 ```bash
-# Using Llama 3.1 8B harness (auto-loads llama3.1-8b.yaml config)
-# Harness will start server automatically if --api-server-url is not provided
-python harness/harness_llama3.1_8b.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline \
-    --test-mode performance \
-    --batch-size 13368 \
-    --num-samples 13368 \
-    --output-dir ./harness_output
+python3 scripts/run_submission.py --scenario Offline run-offline
 ```
 
-#### Example 1a: Using Existing Backend Server
+This will run:
+- Offline Performance test
+- Offline Accuracy test
+- Offline Compliance TEST07
+- Offline Compliance TEST09
+
+### Running Server Tests
+
+To run all server tests (performance, accuracy, and compliance):
 
 ```bash
-# Connect to existing backend server
-python harness/harness_llama3.1_8b.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --batch-size 13368
+python3 scripts/run_submission.py --scenario Server --server-target-qps 3 run-server
 ```
 
-#### Example 2: Using Model Category
+This will run:
+- Server Performance test
+- Server Accuracy test
+- Server Compliance TEST07
+- Server Compliance TEST09
+
+**Note:** `--server-target-qps` is required for Server scenario.
+
+### Running All Tests
+
+To run all tests for both Server and Offline scenarios:
 
 ```bash
-# Use model category to select harness, and model name for the actual model
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline
+python3 scripts/run_submission.py --server-target-qps 3 run-all
 ```
 
-#### Example 2a: Using Llama2-70B Category
+### Running Specific Test Types
+
+**Performance tests only:**
+```bash
+# Offline performance
+python3 scripts/run_submission.py --scenario Offline run-performance
+
+# Server performance
+python3 scripts/run_submission.py --scenario Server --server-target-qps 3 run-performance
+```
+
+**Accuracy tests only:**
+```bash
+# Offline accuracy
+python3 scripts/run_submission.py --scenario Offline run-accuracy
+
+# Server accuracy
+python3 scripts/run_submission.py --scenario Server --server-target-qps 3 run-accuracy
+```
+
+**Compliance tests:**
+```bash
+# Run both TEST07 and TEST09 (default)
+python3 scripts/run_submission.py --scenario Offline run-compliance
+
+# Run only TEST07
+python3 scripts/run_submission.py --scenario Offline run-compliance TEST07
+
+# Run only TEST09
+python3 scripts/run_submission.py --scenario Server --server-target-qps 3 run-compliance TEST09
+```
+
+### Additional Options
+
+**Dry run (see commands without executing):**
+```bash
+# Dry run shows what commands would be executed without actually running them
+# This is useful for verifying configuration before running actual tests
+python3 scripts/run_submission.py --dry-run run-server
+python3 scripts/run_submission.py --dry-run --scenario Offline run-offline
+
+# Dry run also validates configuration in lenient mode
+# It will show warnings about missing environment variables but won't fail
+```
+
+**Generate bash script:**
+```bash
+# Generate bash script for Server tests
+python3 scripts/run_submission.py --print-bash run-server > run_tests.sh
+
+# Generate bash script for Offline tests
+python3 scripts/run_submission.py --print-bash --scenario Offline run-compliance > compliance_tests.sh
+```
+
+**Custom output directory:**
+```bash
+python3 scripts/run_submission.py --output-dir /path/to/output run-server
+```
+
+**Custom MLflow tags:**
+```bash
+python3 scripts/run_submission.py --tag submission=final,version=1.0 run-server
+```
+
+**Custom user configuration:**
+```bash
+python3 scripts/run_submission.py --user-conf /path/to/user.conf run-server
+```
+
+**Custom audit configuration:**
+```bash
+python3 scripts/run_submission.py --audit-config /path/to/audit.config run-compliance
+```
+
+### Command Line Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `--scenario` | Scenario: `Server` or `Offline` | Yes (for specific scenarios) |
+| `--server-target-qps` | Target QPS for Server scenario | Yes (for Server scenario) |
+| `--output-dir` | Output directory (default: `./harness_output`) | No |
+| `--dataset-dir` | Dataset directory | No (can use env var) |
+| `--perf-dataset` | Performance dataset path | No (can use env var) |
+| `--acc-dataset` | Accuracy dataset path | No (can use env var) |
+| `--compliance-dataset` | Compliance dataset path | No (can use env var) |
+| `--api-server-url` | API server URL | No (can use env var) |
+| `--mlflow-tracking-uri` | MLflow tracking URI | No (can use env var) |
+| `--mlflow-experiment-name` | MLflow experiment name | No (can use env var) |
+| `--tag`, `--mlflow-tag` | MLflow tags (format: `key1=value1,key2=value2`) | No |
+| `--user-conf` | User config file | No |
+| `--audit-config` | Audit config file for compliance tests | No |
+| `--dry-run` | Print commands without executing | No |
+| `--print-bash` | Generate bash script | No |
+
+### Commands
+
+| Command | Description |
+|--------|-------------|
+| `run-server` | Run all Server tests (performance, accuracy, compliance) |
+| `run-offline` | Run all Offline tests (performance, accuracy, compliance) |
+| `run-all` | Run all tests for both scenarios |
+| `run-performance` | Run performance test only |
+| `run-accuracy` | Run accuracy test only |
+| `run-compliance` | Run compliance tests (TEST07 and TEST09 by default) |
+
+## Creating Submission
+
+After running all tests, create the MLPerf submission package using the `create_submission.sh` script.
+
+### Steps
+
+1. **Ensure all tests have completed successfully:**
+   ```bash
+   # Verify output directory exists and contains results
+   ls -la harness_output/
+   ```
+
+2. **Run create_submission.sh:**
+   ```bash
+   cd harness
+   bash create_submission.sh harness_output
+   ```
+
+   The script will:
+   - Copy the output directory to `SUBMISSION_CHECK`
+   - Run compliance checks
+   - Check accuracy results
+   - Convert to MLPerf submission structure
+   - Truncate accuracy logs
+   - Copy system JSON and config files
+   - Run submission checker
+
+3. **Verify submission:**
+   ```bash
+   # Check the submission structure
+   ls -la SUBMISSION_TEST/_truncated_v6/closed/RedHat/
+   ```
+
+4. **Submission directory structure:**
+   ```
+   SUBMISSION_TEST/_truncated_v6/closed/RedHat/
+   ├── results/
+   │   └── 8xH200-LLM-D-Openshift/
+   │       └── gpt-oss-120b/
+   │           ├── Server/
+   │           │   ├── performance/
+   │           │   ├── accuracy/
+   │           │   └── compliance/
+   │           └── Offline/
+   │               ├── performance/
+   │               ├── accuracy/
+   │               └── compliance/
+   ├── systems/
+   │   └── 8xH200-LLM-D-Openshift.json
+   └── ...
+   ```
+
+### Troubleshooting
+
+If the submission checker fails, check:
+- All test results are present in the output directory
+- Accuracy logs are valid
+- Compliance test results are present
+- System JSON file is correct
+- Config files are in the right location
+
+## Quick Reference
+
+### Complete Workflow
 
 ```bash
-# Use llama2-70b category with specific model
-python harness/harness_main.py \
-    --model-category llama2-70b \
-    --model meta-llama/Llama-2-70B-Instruct \
-    --dataset-path ./dataset.pkl \
-    --scenario Offline
+# 1. Deploy LLM-D server
+cd setup/llm-d/
+bash deploy_gptoss120b_v050.sh server
+
+# 2. Set up environment variables
+cd ../../harness/scripts
+source set_env_vars.sh
+export DATASET_DIR=...
+export API_SERVER_URL=...
+# ... set other required variables
+
+# 3. Navigate to harness directory
+cd ../
+
+# 4. Run tests
+python3 scripts/run_submission.py --scenario Server --server-target-qps 3 run-server
+python3 scripts/run_submission.py --scenario Offline run-offline
+
+# 5. Create submission
+bash create_submission.sh harness_output
 ```
 
-#### Example 2b: Auto-Detection (Backward Compatibility)
-
-```bash
-# Auto-detects model category from model name (backward compatibility)
-python harness/harness_main.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline
-```
-
-#### Example 3: Generic Harness with Explicit Configuration
-
-```bash
-# Use BaseHarness directly with dataset name
-python harness/harness_main.py \
-    --use-generic \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --dataset-name llama3.1-8b \
-    --scenario Offline
-```
-
-### Advanced Configuration Examples
-
-#### Example 4: Specifying Custom Dataset Config File
-
-```bash
-# Use model category with custom dataset config file
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./my_dataset.pkl \
-    --dataset-config-file datasets/my-custom-dataset.yaml \
-    --scenario Offline
-```
-
-#### Example 5: Overriding Column Mappings Programmatically
-
-```bash
-# Override column names from command line
-python harness/harness_main.py \
-    --model deepseek-ai/DeepSeek-R1-0528 \
-    --dataset-path ./dataset.pkl \
-    --input-column prompt \
-    --input-ids-column token_ids \
-    --output-column target \
-    --scenario Offline
-```
-
-#### Example 6: Using Chat Completions Endpoint
-
-```bash
-# Use model category with chat completions endpoint
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type chat_completions \
-    --scenario Offline
-```
-
-#### Example 7: Server Scenario with Metrics
-
-```bash
-# Server scenario with metrics collection and MLflow
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Server \
-    --test-mode performance \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --enable-metrics \
-    --mlflow-experiment-name llama3.1-8b-server \
-    --server-target-qps 100.0
-```
-
-#### Example 8: Using Server Config File
-
-```bash
-# Start server from YAML config file (includes backend, model, port, etc.)
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Offline \
-    --test-mode performance \
-    --enable-metrics \
-    --output-dir ./harness_output
-```
-
-#### Example 8a: Server Config with vLLM Backend
-
-```bash
-# Using vLLM backend with custom configuration
-python harness/harness_main.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Offline \
-    --endpoint-type completions \
-    --batch-size 13368 \
-    --num-samples 13368 \
-    --enable-metrics
-```
-
-#### Example 8b: Server Config with SGLang Backend
-
-```bash
-# Using SGLang backend (update server config to use sglang backend)
-python harness/harness_main.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/sglang_server_config.yaml \
-    --scenario Offline \
-    --endpoint-type chat_completions \
-    --batch-size 1000
-```
-
-#### Example 9: DeepSeek R1 with Custom Settings
-
-```bash
-# DeepSeek R1 with custom dataset and endpoint
-python language/deepseek-r1/harness_deepseek_r1.py \
-    --model deepseek-ai/DeepSeek-R1-0528 \
-    --dataset-path ./deepseek_dataset.pkl \
-    --dataset-name deepseek-r1 \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type chat_completions \
-    --scenario Offline \
-    --batch-size 4388 \
-    --num-samples 4388
-```
-
-#### Example 10: Combining All Options
-
-```bash
-# Comprehensive example with all features including backend server configuration
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --dataset-name llama3.1-8b \
-    --dataset-config-file configs/datasets/llama3.1-8b.yaml \
-    --input-column input \
-    --input-ids-column tok_input \
-    --output-column output \
-    --scenario Offline \
-    --test-mode performance \
-    --server-config backendserver/example_server_config.yaml \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --batch-size 13368 \
-    --num-samples 13368 \
-    --enable-metrics \
-    --mlflow-experiment-name my-experiment \
-    --mlflow-host localhost \
-    --mlflow-port 5000 \
-    --mlflow-output-dir ./harness_output \
-    --output-dir ./harness_output \
-    --user-conf user.conf \
-    --log-level INFO
-```
-
-#### Example 10a: Backend Server Auto-Start (No API URL)
-
-```bash
-# Harness will automatically start server from config file
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Offline \
-    --test-mode performance \
-    --batch-size 13368 \
-    --num-samples 13368 \
-    --enable-metrics \
-    --output-dir ./harness_output
-```
-
-#### Example 10b: Server Scenario with Backend Configuration
-
-```bash
-# Server scenario with backend server configuration and QPS settings
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Server \
-    --test-mode performance \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --server-target-qps 100.0 \
-    --server-coalesce-queries true \
-    --enable-metrics \
-    --mlflow-experiment-name server-test \
-    --output-dir ./server_output
-```
-
-#### Example 10c: Using Llama2-70B with All Options
-
-```bash
-# Comprehensive example with llama2-70b category
-python harness/harness_main.py \
-    --model-category llama2-70b \
-    --model meta-llama/Llama-2-70B-Instruct \
-    --dataset-path ./dataset.pkl \
-    --dataset-name llama2-70b \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Offline \
-    --test-mode performance \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --batch-size 1000 \
-    --num-samples 1000 \
-    --enable-metrics \
-    --output-dir ./harness_output
-```
-
-### Python API Examples
-
-#### Example 11: Using BaseHarness Directly
-
-```python
-from harness.base_harness import BaseHarness
-
-# Basic usage with auto-detected dataset config
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    dataset_name="llama3.1-8b",  # Auto-loads configs/datasets/llama3.1-8b.yaml
-    scenario="Offline",
-    test_mode="performance",
-    batch_size=13368,
-    num_samples=13368,
-    output_dir="./harness_output"
-)
-
-results = harness.run(user_conf="user.conf", lg_model_name="llama3_1-8b")
-```
-
-#### Example 11a: BaseHarness with Backend Server Config
-
-```python
-from harness.base_harness import BaseHarness
-
-# Using backend server configuration file
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    dataset_name="llama3.1-8b",
-    server_config="backendserver/example_server_config.yaml",  # Server config file
-    scenario="Offline",
-    test_mode="performance",
-    batch_size=13368,
-    num_samples=13368,
-    enable_metrics=True,
-    output_dir="./harness_output"
-)
-
-results = harness.run(user_conf="user.conf", lg_model_name="llama3_1-8b")
-```
-
-#### Example 11b: BaseHarness with Existing Server
-
-```python
-from harness.base_harness import BaseHarness
-
-# Connect to existing backend server
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    dataset_name="llama3.1-8b",
-    api_server_url="http://localhost:8000",  # Use existing server
-    server_config={
-        'backend': 'vllm',
-        'endpoint_type': 'completions'
-    },
-    scenario="Offline",
-    test_mode="performance",
-    batch_size=13368,
-    num_samples=13368
-)
-
-results = harness.run(user_conf="user.conf", lg_model_name="llama3_1-8b")
-```
-
-#### Example 12: Custom Dataset Config File
-
-```python
-from harness.base_harness import BaseHarness
-
-# Use specific config file
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./my_dataset.pkl",
-    dataset_config_file="configs/datasets/my-dataset.yaml",  # Custom config
-    scenario="Offline"
-)
-
-results = harness.run()
-```
-
-#### Example 13: Programmatic Column Overrides
-
-```python
-from harness.base_harness import BaseHarness
-
-# Override columns programmatically
-harness = BaseHarness(
-    model_name="deepseek-ai/DeepSeek-R1-0528",
-    dataset_path="./dataset.pkl",
-    input_column="prompt",  # Override input column
-    input_ids_column="token_ids",  # Override input_ids column
-    output_column="target",  # Override output column
-    scenario="Offline"
-)
-
-results = harness.run()
-```
-
-#### Example 14: Using Chat Completions Endpoint
-
-```python
-from harness.base_harness import BaseHarness
-
-# Use chat completions endpoint
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    api_server_url="http://localhost:8000",
-    server_config={
-        'backend': 'vllm',
-        'endpoint_type': 'chat_completions'  # Use chat completions
-    },
-    scenario="Offline"
-)
-
-results = harness.run()
-```
-
-#### Example 15: Server Scenario with All Features
-
-```python
-from harness.base_harness import BaseHarness
-
-# Server scenario with metrics and MLflow
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    dataset_name="llama3.1-8b",
-    scenario="Server",
-    test_mode="performance",
-    api_server_url="http://localhost:8000",
-    server_config={
-        'backend': 'vllm',
-        'endpoint_type': 'completions',
-    },
-    server_target_qps=100.0,
-    server_coalesce_queries=True,
-    enable_metrics=True,
-    mlflow_tracking_uri="http://localhost:5000",
-    mlflow_experiment_name="llama3.1-8b-server",
-    batch_size=100,
-    num_samples=1000,
-    output_dir="./server_output"
-)
-
-results = harness.run()
-```
-
-#### Example 15a: Server Scenario with Backend Config File
-
-```python
-from harness.base_harness import BaseHarness
-
-# Server scenario using backend server config file
-harness = BaseHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    dataset_name="llama3.1-8b",
-    server_config="backendserver/example_server_config.yaml",  # Backend config
-    scenario="Server",
-    test_mode="performance",
-    api_server_url="http://localhost:8000",  # Or let harness start server
-    server_target_qps=100.0,
-    server_coalesce_queries=True,
-    enable_metrics=True,
-    mlflow_tracking_uri="http://localhost:5000",
-    mlflow_experiment_name="llama3.1-8b-server",
-    output_dir="./server_output"
-)
-
-results = harness.run()
-```
-
-#### Example 16: Model-Specific Harness
-
-```python
-from harness.harness_llama3.1_8b import Llama31_8BHarness
-
-# Use model-specific harness (extends BaseHarness)
-harness = Llama31_8BHarness(
-    model_name="meta-llama/Llama-3.1-8B-Instruct",
-    dataset_path="./cnn_eval.json",
-    # dataset_name="llama3.1-8b" is auto-set
-    scenario="Offline",
-    test_mode="performance",
-    api_server_url="http://localhost:8000",
-    enable_metrics=True
-)
-
-results = harness.run(user_conf="user.conf", lg_model_name="llama3_1-8b")
-```
-
-### Configuration File Examples
-
-#### Example 17: Creating Custom Dataset Config
-
-Create `configs/datasets/my-dataset.yaml`:
-
-```yaml
-name: my-dataset
-description: "My custom dataset configuration"
-
-fields:
-  input_column: "prompt"
-  input_ids_column: "token_ids"
-  output_column: "target"
-  input_lens_column: null  # Will be calculated
-
-file_format: "pickle"  # or "json", "csv", "auto"
-
-total_sample_count: 10000
-
-model_specific:
-  default_model_name: "my-model/MyModel"
-```
-
-Then use it:
-
-```bash
-python harness/harness_main.py \
-    --model my-model/MyModel \
-    --dataset-path ./my_dataset.pkl \
-    --dataset-name my-dataset
-```
-
-#### Example 18: Backend-Specific Endpoint Configuration
-
-Create `configs/backends/my-backend.yaml`:
-
-```yaml
-name: my-backend
-description: "My custom backend configuration"
-
-endpoints:
-  - completions
-  # Only completions endpoint available
-
-default_endpoint: completions
-```
-
-The system will validate that only `completions` endpoint is used with this backend.
-
-### Common Use Cases
-
-#### Use Case 1: Quick Performance Test
-
-```bash
-# Quick test with existing server
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline \
-    --test-mode performance \
-    --api-server-url http://localhost:8000 \
-    --batch-size 13368 \
-    --num-samples 13368 \
-    --output-dir ./quick_test
-```
-
-#### Use Case 1a: Quick Test with Auto-Start Server
-
-```bash
-# Quick test - harness starts server automatically
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --scenario Offline \
-    --test-mode performance \
-    --batch-size 13368 \
-    --num-samples 13368
-```
-
-#### Use Case 2: Accuracy Testing
-
-```bash
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Offline \
-    --test-mode accuracy \
-    --api-server-url http://localhost:8000
-```
-
-#### Use Case 3: Server Latency Testing
-
-```bash
-# Server latency testing with backend server
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --scenario Server \
-    --test-mode performance \
-    --server-config backendserver/example_server_config.yaml \
-    --api-server-url http://localhost:8000 \
-    --endpoint-type completions \
-    --server-target-qps 50.0 \
-    --server-coalesce-queries true \
-    --enable-metrics \
-    --output-dir ./latency_test
-```
-
-#### Use Case 4: Testing with Different Endpoints
-
-```bash
-# Test with completions endpoint (default)
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --endpoint-type completions \
-    --api-server-url http://localhost:8000 \
-    --batch-size 13368 \
-    --output-dir ./test_completions
-
-# Test with chat_completions endpoint
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json \
-    --server-config backendserver/example_server_config.yaml \
-    --endpoint-type chat_completions \
-    --api-server-url http://localhost:8000 \
-    --batch-size 13368 \
-    --output-dir ./test_chat_completions
-```
-
-#### Use Case 5: Using Different Models
-
-```bash
-# Llama 3.1 8B
-python harness/harness_main.py \
-    --model-category llama3.1-8b \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --dataset-path ./cnn_eval.json
-
-# Llama 2 70B
-python harness/harness_main.py \
-    --model-category llama2-70b \
-    --model meta-llama/Llama-2-70B-Instruct \
-    --dataset-path ./dataset.pkl
-
-# DeepSeek R1
-python language/deepseek-r1/harness_deepseek_r1.py \
-    --model deepseek-ai/DeepSeek-R1-0528 \
-    --dataset-path ./deepseek_dataset.pkl
-```
-
-## Dataset Format
-
-The dataset processor supports multiple formats:
-
-### JSON Format
-
-```json
-[
-  {
-    "input": "Question: What is...",
-    "tok_input": [1234, 5678, ...],
-    "output": "Answer: ..."
-  },
-  ...
-]
-```
-
-Or as a dictionary:
-```json
-{
-  "input": ["Question 1", "Question 2", ...],
-  "tok_input": [[1234, ...], [5678, ...], ...],
-  "output": ["Answer 1", "Answer 2", ...]
-}
-```
-
-### Pickle Format
-
-```python
-import pandas as pd
-
-df = pd.DataFrame({
-    'input': [...],
-    'tok_input': [...],
-    'output': [...]
-})
-df.to_pickle('dataset.pkl')
-```
-
-## Architecture
-
-### Component Flow
-
-```
-Harness
-  ├── Backend Server (vLLM/SGLang)
-  │   └── Manages inference server lifecycle
-  ├── Dataset Processor
-  │   └── Loads and processes datasets
-  └── LoadGen Client
-      ├── Offline Client (batch processing)
-      └── Server Client (real-time queries)
-```
-
-### Integration with SUT_VLLM_SingleReplica
-
-The harness takes inspiration from `SUT_VLLM_SingleReplica.py`, specifically:
-- `VLLMSingleSUTAPI` for API server communication
-- Dataset loading from `Dataset` class
-- Query processing and response handling
-- LoadGen integration patterns
-
-## Extending the Harness
-
-### Adding a New Client
-
-1. Create a new client class in `Client/`:
-
-```python
-from Client.base_client import BaseClient
-
-class MyNewClient(BaseClient):
-    def __init__(self, *args, **kwargs):
-        super().__init__("myclient", *args, **kwargs)
-    
-    def initialize(self):
-        # Initialize client
-        pass
-    
-    def run(self):
-        # Run client logic
-        pass
-    
-    def cleanup(self):
-        # Cleanup resources
-        pass
-```
-
-2. Update `Client/__init__.py` to export the new client.
-
-### Adding a New Backend
-
-1. Create a new server class in `backendserver/`:
-
-```python
-from backendserver.inference_server import InferenceServer
-
-class MyBackendServer(InferenceServer):
-    def get_backend_name(self):
-        return "mybackend"
-    
-    # Implement required methods...
-```
-
-2. Update `backendserver/__init__.py` to export the new server.
-
-## Testing
-
-See individual component directories for testing:
-- `backendserver/tests/` - Server tests
-- Test harness with sample datasets
-
-## Documentation
-
-Additional documentation is available in the `docs/` directory:
-
-- **GPT-OSS-120B and Qwen3VL Support**: `docs/gpt-oss-120b-and-qwen3vl-support.md`
-  - Complete guide for using GPT-OSS-120B and Qwen3VL models
-  - Command line examples and configuration
-  - Troubleshooting tips
-
-- **Load Balancing**: `docs/LOAD_BALANCING.md`
-  - Guide for using multiple API servers with load balancing
-  - Round-robin and random strategies
-  - Retry logic and fault tolerance
-
-- **Host Configuration**: `docs/HOST_CONFIGURATION.md`
-  - Configure API server hosts in YAML files
-  - Command line host overrides
-  - Integration with load balancing
-
-- **Changelog**: `docs/CHANGELOG-gpt-oss-qwen3vl.md`
-  - Detailed list of changes and new features
-  - Migration notes and known limitations
-
-## Requirements
-
-- Python 3.7+
-- mlperf_loadgen
-- requests
-- pandas (for dataset processing)
-- PyYAML (for server configs)
-- transformers (for tokenization)
-- psutil (optional, for debug mode)
-
+## Additional Resources
+
+- LLM-D documentation: See `setup/llm-d/OVERRIDE_FILES_README.md`
+- Environment variables script: `harness/scripts/set_env_vars.sh`
+- Submission converter: `harness/scripts/convert_to_submission.py`

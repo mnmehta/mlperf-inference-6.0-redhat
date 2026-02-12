@@ -34,6 +34,10 @@ python3 run_submission.py --dry-run run-server
 python3 run_submission.py --print-bash run-server > run_tests.sh
 python3 run_submission.py --print-bash --scenario Offline run-compliance > compliance_tests.sh
 
+# Run without MLflow integration
+python3 run_submission.py --no-mlflow --scenario Offline run-offline
+python3 run_submission.py --no-mlflow --scenario Server --server-target-qps 3 run-server
+
 """
 
 import argparse
@@ -41,6 +45,7 @@ import os
 import sys
 import subprocess
 import shutil
+import resource
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
@@ -79,6 +84,7 @@ class HarnessRunner:
             'user_conf': os.environ.get('USER_CONF', ''),
             'dry_run': False,
             'print_bash': False,
+            'no_mlflow': False,
         }
         
         # Derive dataset paths if dataset_dir is set
@@ -145,6 +151,7 @@ Examples:
         parser.add_argument('--user-conf', help='User config file for performance/accuracy tests')
         parser.add_argument('--dry-run', action='store_true', help='Print commands without executing')
         parser.add_argument('--print-bash', action='store_true', help='Print bash script with environment variables and commands')
+        parser.add_argument('--no-mlflow', action='store_true', help='Disable MLflow integration (skip all MLflow arguments)')
         
         # Commands
         parser.add_argument('command', nargs='?', choices=['run-server', 'run-offline', 'run-all', 
@@ -156,7 +163,7 @@ Examples:
         
         # Update config from parsed arguments
         for key, value in vars(parsed).items():
-            if value is not None and key not in ['command', 'command_args', 'dry_run', 'print_bash']:
+            if value is not None and key not in ['command', 'command_args', 'dry_run', 'print_bash', 'no_mlflow']:
                 config_key = key.replace('-', '_')
                 if config_key in self.config:
                     self.config[config_key] = value
@@ -165,6 +172,7 @@ Examples:
         
         self.config['dry_run'] = parsed.dry_run
         self.config['print_bash'] = parsed.print_bash
+        self.config['no_mlflow'] = parsed.no_mlflow
         
         # Handle run-compliance command args (scenario and/or test)
         command = parsed.command
@@ -193,9 +201,12 @@ Examples:
             'api_server_url': 'API_SERVER_URL',
             'aws_access_key_id': 'AWS_ACCESS_KEY_ID',
             'aws_secret_access_key': 'AWS_SECRET_ACCESS_KEY',
-            'mlflow_tracking_uri': 'MLFLOW_TRACKING_URI',
-            'mlflow_experiment_name': 'MLFLOW_EXPERIMENT_NAME',
         }
+        
+        # Add MLflow requirements only if not disabled
+        if not self.config['no_mlflow']:
+            required_vars['mlflow_tracking_uri'] = 'MLFLOW_TRACKING_URI'
+            required_vars['mlflow_experiment_name'] = 'MLFLOW_EXPERIMENT_NAME'
         
         for config_key, env_var in required_vars.items():
             if not self.config[config_key]:
@@ -295,37 +306,42 @@ Examples:
             '--api-server-url', self.config['api_server_url'],
             '--scenario', scenario,
             '--output-dir', str(output_dir),
-            '--mlflow-experiment-name', self.config['mlflow_experiment_name'],
         ]
         
-        # Add MLflow tracking URI
-        if self.config['mlflow_tracking_uri']:
-            uri = self.config['mlflow_tracking_uri'].replace('http://', '').replace('https://', '')
-            if ':' in uri:
-                host, port = uri.split(':', 1)
-                cmd.extend(['--mlflow-host', host])
-                cmd.extend(['--mlflow-port', port])
-            else:
-                cmd.extend(['--mlflow-host', uri])
+        # Add MLflow arguments only if not disabled
+        if not self.config['no_mlflow']:
+            cmd.extend(['--mlflow-experiment-name', self.config['mlflow_experiment_name']])
+            
+            # Add MLflow tracking URI
+            if self.config['mlflow_tracking_uri']:
+                uri = self.config['mlflow_tracking_uri'].replace('http://', '').replace('https://', '')
+                if ':' in uri:
+                    host, port = uri.split(':', 1)
+                    cmd.extend(['--mlflow-host', host])
+                    cmd.extend(['--mlflow-port', port])
+                else:
+                    cmd.extend(['--mlflow-host', uri])
+            
+            # Add MLflow description
+            if description:
+                cmd.extend(['--mlflow-description', description])
+            
+            # Add MLflow tags (merge user tag with existing tags)
+            final_tags = tags
+            if self.config['mlflow_user_tag']:
+                if final_tags:
+                    final_tags = f"{final_tags},{self.config['mlflow_user_tag']}"
+                else:
+                    final_tags = self.config['mlflow_user_tag']
+            
+            if final_tags:
+                cmd.extend(['--mlflow-tag', final_tags])
         
         # Add server-target-qps for Server scenario
         if scenario == 'Server':
             cmd.extend(['--server-target-qps', self.config['server_target_qps']])
-        
-        # Add MLflow description
-        if description:
-            cmd.extend(['--mlflow-description', description])
-        
-        # Add MLflow tags (merge user tag with existing tags)
-        final_tags = tags
-        if self.config['mlflow_user_tag']:
-            if final_tags:
-                final_tags = f"{final_tags},{self.config['mlflow_user_tag']}"
-            else:
-                final_tags = self.config['mlflow_user_tag']
-        
-        if final_tags:
-            cmd.extend(['--mlflow-tag', final_tags])
+            cmd.extend(['--server-max-concurrent', '6396'])
+            cmd.extend(['--num-workers', '1'])
         
         # Add user-conf for performance/accuracy tests (if not compliance)
         # Priority: explicit user_conf > scenario-specific defaults
@@ -375,9 +391,10 @@ Examples:
                 else:
                     print(f"WARNING: Audit override config file not found: {self.config['audit_override_conf']}, skipping --user-conf")
         
-        # Add offline-specific flags for offline performance and accuracy
+        # Add offline-specific flags for offline performance, accuracy, and compliance tests
+        # Note: Compliance tests use test_mode='performance', so they will also get these flags
         if scenario == 'Offline' and test_mode in ['performance', 'accuracy']:
-            cmd.extend(['--offline-back-to-back', '--offline-async-concurrency'])
+            cmd.extend(['--offline-back-to-back', '--offline-async-concurrency', '6396'])
         
         # Add audit config for compliance tests
         if audit_config_path:
@@ -541,6 +558,16 @@ Examples:
         """Generate bash script with environment variables and commands."""
         lines = ['#!/bin/bash', '', '# Generated bash script for MLPerf harness tests', '']
         
+        # Clean up audit.config at the beginning
+        lines.append('# Cleanup audit.config if it exists')
+        lines.append(f'rm -f "{self.harness_dir / "audit.config"}"')
+        lines.append('')
+        
+        # Set ulimit for file descriptors
+        lines.append('# Set ulimit for file descriptors')
+        lines.append('ulimit -n 32768')
+        lines.append('')
+        
         # Export environment variables
         lines.append('# Environment Variables')
         env_vars = {
@@ -552,9 +579,6 @@ Examples:
             'API_SERVER_URL': self.config['api_server_url'],
             'AWS_ACCESS_KEY_ID': self.config['aws_access_key_id'],
             'AWS_SECRET_ACCESS_KEY': self.config['aws_secret_access_key'],
-            'MLFLOW_TRACKING_URI': self.config['mlflow_tracking_uri'],
-            'MLFLOW_EXPERIMENT_NAME': self.config['mlflow_experiment_name'],
-            'MLFLOW_USER_TAG': self.config['mlflow_user_tag'],
             'HF_HOME': self.config['hf_home'],
             'MODEL_CATEGORY': self.config['model_category'],
             'MODEL': self.config['model'],
@@ -567,6 +591,12 @@ Examples:
             'AUDIT_OVERRIDE_CONF': self.config['audit_override_conf'],
             'USER_CONF': self.config['user_conf'],
         }
+        
+        # Add MLflow environment variables only if not disabled
+        if not self.config['no_mlflow']:
+            env_vars['MLFLOW_TRACKING_URI'] = self.config['mlflow_tracking_uri']
+            env_vars['MLFLOW_EXPERIMENT_NAME'] = self.config['mlflow_experiment_name']
+            env_vars['MLFLOW_USER_TAG'] = self.config['mlflow_user_tag']
         
         for var_name, var_value in env_vars.items():
             if var_value:
@@ -777,6 +807,39 @@ Examples:
         
         # Handle print-bash mode
         if self.config['print_bash']:
+            # Validate required environment variables before generating bash script
+            required_vars = {
+                'dataset_dir': 'DATASET_DIR',
+                'api_server_url': 'API_SERVER_URL',
+                'aws_access_key_id': 'AWS_ACCESS_KEY_ID',
+                'aws_secret_access_key': 'AWS_SECRET_ACCESS_KEY',
+            }
+            
+            # Add MLflow requirements only if not disabled
+            if not self.config['no_mlflow']:
+                required_vars['mlflow_tracking_uri'] = 'MLFLOW_TRACKING_URI'
+                required_vars['mlflow_experiment_name'] = 'MLFLOW_EXPERIMENT_NAME'
+            
+            missing_vars = []
+            for config_key, env_var in required_vars.items():
+                if not self.config[config_key]:
+                    missing_vars.append(env_var)
+            
+            if missing_vars:
+                print("ERROR: The following required environment variables are not set:")
+                for var in missing_vars:
+                    print(f"  - {var}")
+                print("\nPlease set them before using --print-bash")
+                sys.exit(1)
+            
+            # Check server-target-qps for Server scenario
+            if self.config['scenario'] == 'Server':
+                if not self.config['server_target_qps_set'] or not self.config['server_target_qps']:
+                    print("ERROR: --server-target-qps is required for Server scenario")
+                    print("       Please specify it via: --server-target-qps <value>")
+                    print("       Or set it via environment variable: export SERVER_TARGET_QPS=<value>")
+                    sys.exit(1)
+            
             bash_script = self.generate_bash_script(command, command_args)
             print(bash_script)
             sys.exit(0)
@@ -793,9 +856,12 @@ Examples:
         print(f"  SCENARIO: {self.config['scenario']}")
         if self.config['scenario'] == 'Server':
             print(f"  SERVER_TARGET_QPS: {self.config['server_target_qps']}")
-        print(f"  MLFLOW_EXPERIMENT_NAME: {self.config['mlflow_experiment_name']}")
-        if self.config['mlflow_tracking_uri']:
-            print(f"  MLFLOW_TRACKING_URI: {self.config['mlflow_tracking_uri']}")
+        if not self.config['no_mlflow']:
+            print(f"  MLFLOW_EXPERIMENT_NAME: {self.config['mlflow_experiment_name']}")
+            if self.config['mlflow_tracking_uri']:
+                print(f"  MLFLOW_TRACKING_URI: {self.config['mlflow_tracking_uri']}")
+        else:
+            print(f"  MLFLOW: Disabled (--no-mlflow)")
         if self.config['aws_access_key_id']:
             print(f"  AWS_ACCESS_KEY_ID: {self.config['aws_access_key_id'][:4]}...")
         if self.config['hf_home']:
@@ -811,6 +877,14 @@ Examples:
         if not self.validate_config():
             print("ERROR: Configuration validation failed. Exiting.")
             sys.exit(1)
+        
+        # Set ulimit for file descriptors
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (32768, 32768))
+            print(f"Set ulimit -n to 32768")
+        except Exception as e:
+            print(f"WARNING: Could not set ulimit -n 32768: {e}")
+            print("         You may need to set it manually: ulimit -n 32768")
         
         # Export environment variables
         if self.config['aws_access_key_id']:

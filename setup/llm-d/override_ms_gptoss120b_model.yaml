@@ -1,0 +1,8 @@
+# Model artifacts for GPT-OSS-120B
+# This override only specifies model location - vLLM args and CUDA compat fix
+# are handled by install_llmd.py based on repo_tag
+
+modelArtifacts:
+  uri: "pvc://models-storage/models/openai-gpt-oss-120b"
+  name: "openai/gpt-oss-120b"
+  size: 500Gi
