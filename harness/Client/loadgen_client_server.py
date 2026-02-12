@@ -153,6 +153,14 @@ class LoadGenServerClient(LoadGenClient):
         except Exception as e:
             self.logger.error(f"Error processing query {query_id}: {e}")
             self._send_error_response_by_id(query_id)
+
+    def _submit_first_token_response(self, first_token_id: int, query_id: int):
+        # Create first token response (single token)
+        first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
+        response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
+        bi = response_data.buffer_info()
+        response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
+        lg.FirstTokenComplete(response)
     
     def _stream_api_vllm(self, input_text: str, response_ids: List[int]) -> List[int]:
         """
@@ -282,14 +290,7 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and delta_token_ids:
-                                            first_token_id = delta_token_ids[0]
-                                            query_id = response_ids[0]
-                                            # Create first token response (single token)
-                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                            bi = response_data.buffer_info()
-                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                            lg.FirstTokenComplete(response)
+                                            self._submit_first_token_response(delta_token_ids[0], response_ids[0])
                                             first = False
 
                                     elif chunk_token_ids is not None:
@@ -309,14 +310,7 @@ class LoadGenServerClient(LoadGenClient):
 
                                         # Handle first token - call FirstTokenComplete directly (thread-safe)
                                         if first and token_ids_cache:
-                                            first_token_id = token_ids_cache[0]
-                                            query_id = response_ids[0]
-                                            # Create first token response (single token)
-                                            first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                            response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                            bi = response_data.buffer_info()
-                                            response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                            lg.FirstTokenComplete(response)
+                                            self._submit_first_token_response(token_ids_cache[0], response_ids[0])
                                             first = False
 
                                     else:
@@ -340,14 +334,7 @@ class LoadGenServerClient(LoadGenClient):
                                                 if self.tokenizer:
                                                     token_ids = self.tokenizer.encode(token_s, add_special_tokens=False)
                                                     if token_ids:
-                                                        first_token_id = token_ids[0]
-                                                        query_id = response_ids[0]
-                                                        # Create first token response (single token)
-                                                        first_tokens = [first_token_id] if isinstance(first_token_id, int) else first_token_id
-                                                        response_data = array.array("B", np.array(first_tokens, dtype=np.int32).tobytes())
-                                                        bi = response_data.buffer_info()
-                                                        response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
-                                                        lg.FirstTokenComplete(response)
+                                                        self._submit_first_token_response(token_ids[0], response_ids[0])
                                                 first = False
 
                                             token_s_cache.append(str(token_s))
