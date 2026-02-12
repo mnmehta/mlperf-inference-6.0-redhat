@@ -12,6 +12,7 @@ from typing import List
 
 import numpy as np
 import requests
+import requests.adapters
 
 try:
     import mlperf_loadgen as lg
@@ -71,13 +72,15 @@ class LoadGenServerClient(LoadGenClient):
         """Worker thread to process queued queries with ThreadPoolExecutor."""
         # Create ThreadPoolExecutor for this worker
         # Each worker manages its own executor with configurable concurrency
-        max_concurrent = getattr(self, 'max_concurrent', None)
+        max_concurrent = getattr(self, 'max_concurrent', 4096)
         executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix=f"async-worker-{worker_id}")
         self.worker_executors[worker_id] = executor
 
         # Create dedicated session for this worker
         # NOTE: Sessions are not entirely thread-safe but should be fine for our use case
         session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_concurrent, pool_maxsize=max_concurrent)
+        session.mount('http://', adapter)
 
         self.logger.debug(f"Worker {worker_id}: Started with executor (max_workers={max_concurrent})")
 
