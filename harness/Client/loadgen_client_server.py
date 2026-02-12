@@ -37,40 +37,47 @@ class SchedTiming:
     first_token: Optional[int] = None
     first_token_sent: Optional[int] = None
 
-    def queue_time(self) -> int:
+    def queue_time(self) -> float:
+        """Return queue time in milliseconds."""
         if self.func_start is None:
             raise ValueError("func_start is not set")
-        return self.func_start - self.queue_start
+        return (self.func_start - self.queue_start) / 1_000_000
 
-    def func_time(self) -> int:
+    def func_time(self) -> float:
+        """Return function execution time in milliseconds."""
         if self.func_start is None or self.func_end is None:
             raise ValueError("func_start or func_end is not set")
-        return self.func_end - self.func_start
+        return (self.func_end - self.func_start) / 1_000_000
 
-    def stream_func_time(self) -> int:
+    def stream_func_time(self) -> float:
+        """Return streaming function time in milliseconds."""
         if self.stream_init is None or self.stream_deinit is None:
             raise ValueError("stream_init or stream_deinit is not set")
-        return self.stream_deinit - self.stream_init
+        return (self.stream_deinit - self.stream_init) / 1_000_000
 
-    def request_time(self) -> int:
+    def request_time(self) -> float:
+        """Return request time in milliseconds."""
         if self.request_start is None or self.request_end is None:
             raise ValueError("request_start or request_end is not set")
-        return self.request_end - self.request_start
+        return (self.request_end - self.request_start) / 1_000_000
 
-    def first_token_send_time(self) -> int:
+    def first_token_send_time(self) -> float:
+        """Return first token send time in milliseconds."""
         if self.first_token is None or self.first_token_sent is None:
             raise ValueError("first_token or first_token_sent is not set")
-        return self.first_token_sent - self.first_token
+        return (self.first_token_sent - self.first_token) / 1_000_000
 
-    def preprocessing_time(self) -> int:
+    def preprocessing_time(self) -> float:
+        """Return preprocessing time in milliseconds."""
         if self.func_start is None or self.request_start is None:
             raise ValueError("func_start or request_start is not set")
-        return self.request_start - self.func_start
+        return (self.request_start - self.func_start) / 1_000_000
 
-    def postprocessing_time(self) -> int:
+    def postprocessing_time(self) -> float:
+        """Return postprocessing time in milliseconds."""
         if self.request_end is None or self.func_end is None:
             raise ValueError("request_end or func_end is not set")
-        return self.request_end - self.func_end
+        return (self.func_end - self.request_end) / 1_000_000
 
 
 class LoadGenServerClient(LoadGenClient):
@@ -270,10 +277,10 @@ class LoadGenServerClient(LoadGenClient):
         timing.func_end = time.perf_counter_ns()
         self.logger.info(
             (
-                "Query %d processing complete: queue_time=%d ns, "
-                "func_time=%d ns, stream_func_time=%d ns, "
-                "request_time=%d ns, first_token_send_time=%d ns, "
-                "preprocessing_time=%d ns, postprocessing_time=%d ns"
+                "Query %d processing complete: queue_time=%.2f ms, "
+                "func_time=%.2f ms, stream_func_time=%.2f ms, "
+                "request_time=%.2f ms, first_token_send_time=%.2f ms, "
+                "preprocessing_time=%.2f ms, postprocessing_time=%.2f ms"
             ),
             query_id,
             timing.queue_time(),
