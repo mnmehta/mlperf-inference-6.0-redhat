@@ -72,7 +72,7 @@ class LoadGenServerClient(LoadGenClient):
         """Worker thread to process queued queries with ThreadPoolExecutor."""
         # Create ThreadPoolExecutor for this worker
         # Each worker manages its own executor with configurable concurrency
-        max_concurrent = getattr(self, 'max_concurrent', 4096)
+        max_concurrent = getattr(self, 'max_concurrent', 8192)
         executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix=f"async-worker-{worker_id}")
         self.worker_executors[worker_id] = executor
 
@@ -104,6 +104,9 @@ class LoadGenServerClient(LoadGenClient):
                         qitem.index,
                         session
                     )
+                    if hasattr(executor, '_work_queue'):
+                        queue_size = executor._work_queue.qsize()
+                        self.logger.info(f"Worker {worker_id}: Submitted query {qitem.id} (index {qitem.index}), executor queue size: {queue_size}")
 
                 except Exception as e:
                     self.logger.error(f"Worker {worker_id}: Error in query processing: {e}")
