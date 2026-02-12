@@ -4,15 +4,13 @@ This module contains the LoadGenServerClient class for Server scenario benchmark
 """
 
 import array
+import asyncio
 import json
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
+import aiohttp
 import numpy as np
-import requests
-import requests.adapters
 
 try:
     import mlperf_loadgen as lg
@@ -41,8 +39,8 @@ class LoadGenServerClient(LoadGenClient):
         kwargs['scenario'] = 'Server'
         super().__init__(*args, **kwargs)
         self.query_counter = 0
-        # Track executors for cleanup
-        self.worker_executors = {}
+        # Track event loops for cleanup
+        self.worker_loops = {}
     
     def start_workers(self):
         """Start worker threads for async query processing."""
@@ -69,59 +67,81 @@ class LoadGenServerClient(LoadGenClient):
         self.logger.info("Worker threads started")
     
     def _process_queries_worker(self, worker_id: int):
-        """Worker thread to process queued queries with ThreadPoolExecutor."""
-        # Create ThreadPoolExecutor for this worker
-        # Each worker manages its own executor with configurable concurrency
-        max_concurrent = getattr(self, 'max_concurrent', 4096)
-        executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix=f"async-worker-{worker_id}")
-        self.worker_executors[worker_id] = executor
+        """Worker thread to process queued queries with asyncio."""
+        # Create a new event loop for this worker thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.worker_loops[worker_id] = loop
 
-        # Create dedicated session for this worker
-        # NOTE: Sessions are not entirely thread-safe but should be fine for our use case
-        session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=max_concurrent, pool_maxsize=max_concurrent)
-        session.mount('http://', adapter)
-
-        self.logger.debug(f"Worker {worker_id}: Started with executor (max_workers={max_concurrent})")
+        self.logger.debug(f"Worker {worker_id}: Started with asyncio event loop")
 
         try:
+            # Run the async worker loop
+            loop.run_until_complete(self._async_worker_loop(worker_id, loop))
+        finally:
+            # Cleanup: cancel all pending tasks
+            self.logger.debug(f"Worker {worker_id}: Shutting down event loop")
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # Wait for all tasks to complete cancellation
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+            self.logger.debug(f"Worker {worker_id}: Cleanup complete")
+
+    async def _async_worker_loop(self, worker_id: int, loop: asyncio.AbstractEventLoop):
+        """Async worker loop that processes queries from the queue."""
+        # Create aiohttp session with connection pooling
+        connector = aiohttp.TCPConnector(limit=None)
+        timeout = aiohttp.ClientTimeout(total=None)  # No timeout for streaming
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            self.logger.debug(f"Worker {worker_id}: Created aiohttp session")
+
+            # Track active tasks for this worker
+            active_tasks = set()
+
             while True:
+                # Get query from queue (blocking call in thread)
+                # We need to run this in executor since queue.get() is blocking
                 try:
-                    qitem = self.query_queue.get()
+                    qitem = await loop.run_in_executor(None, self.query_queue.get)
 
                     if qitem is None:
-                        self.logger.debug(f"Worker {worker_id}: Received stop signal, exiting")
+                        self.logger.debug(f"Worker {worker_id}: Received stop signal, waiting for active tasks")
+                        # Wait for all active tasks to complete
+                        if active_tasks:
+                            await asyncio.gather(*active_tasks, return_exceptions=True)
                         break
 
                     # Get input IDs from dataset
                     input_ids_tensor = self.dataset.input_ids[qitem.index]
 
-                    # Submit query processing to executor (with session)
-                    executor.submit(
-                        self._async_process_query,
-                        input_ids_tensor,
-                        qitem.id,
-                        qitem.index,
-                        session
+                    # Create async task for query processing
+                    task = asyncio.create_task(
+                        self._async_process_query(
+                            input_ids_tensor,
+                            qitem.id,
+                            qitem.index,
+                            session
+                        )
                     )
+                    active_tasks.add(task)
+                    # Remove task from active set when done
+                    task.add_done_callback(active_tasks.discard)
 
                 except Exception as e:
                     self.logger.error(f"Worker {worker_id}: Error in query processing: {e}")
-        finally:
-            # Cleanup executor and session when worker exits
-            self.logger.debug(f"Worker {worker_id}: Shutting down executor")
-            executor.shutdown(wait=True, cancel_futures=False)
-            session.close()
-            self.logger.debug(f"Worker {worker_id}: Cleanup complete")
     
-    def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: requests.Session):
+    async def _async_process_query(self, input_ids_tensor: List[int], query_id: int, query_index: int, session: aiohttp.ClientSession):
         """Process a single query asynchronously via streaming API.
 
         Args:
             input_ids_tensor: Input token IDs
             query_id: Query ID for LoadGen
             query_index: Index in dataset
-            session: requests.Session to use for this request
+            session: aiohttp.ClientSession to use for this request
         """
         try:
             # Get input token count for tracking
@@ -154,7 +174,7 @@ class LoadGenServerClient(LoadGenClient):
 
             # Process via streaming API (pass session)
             response_ids = [query_id]
-            output_tokens = self._stream_api_vllm(decoded, response_ids, session)
+            output_tokens = await self._stream_api_vllm(decoded, response_ids, session)
             
             n_tokens = len(output_tokens)
             self.logger.debug(f"Query {query_id}: {n_tokens} tokens")
@@ -200,14 +220,14 @@ class LoadGenServerClient(LoadGenClient):
         response = [lg.QuerySampleResponse(query_id, bi[0], bi[1])]
         lg.FirstTokenComplete(response)
     
-    def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: requests.Session) -> List[int]:
+    async def _stream_api_vllm(self, input_text: str, response_ids: List[int], session: aiohttp.ClientSession) -> List[int]:
         """
         Stream API call to vLLM server with first token handling.
 
         Args:
             input_text: Input text prompt
             response_ids: List of response IDs (for first token handling)
-            session: requests.Session to use for this request
+            session: aiohttp.ClientSession to use for this request
 
         Returns:
             List of output token IDs
@@ -274,25 +294,25 @@ class LoadGenServerClient(LoadGenClient):
 
         while True:
             try:
-                with session.post(
+                async with session.post(
                     endpoint_url,
                     headers=headers,
                     json=json_data,
-                    verify=False,
-                    stream=True,
-                    timeout=None
+                    ssl=False
                 ) as resp:
-                    if resp.status_code != 200:
+                    if resp.status != 200:
                         retry_count += 1
                         if retry_count <= max_retries:
-                            self.logger.warning(f"API server returned status {resp.status_code}: {resp.text}. Retry {retry_count}/{max_retries}")
-                            time.sleep(0.05)  # Wait 50ms before retry
+                            self.logger.warning(f"API server returned status {resp.status}. Retry {retry_count}/{max_retries}")
+                            await asyncio.sleep(0.05)  # Wait 50ms before retry
                             continue
                         else:
-                            self.logger.error(f"API server returned status {resp.status_code}: {resp.text}. Max retries ({max_retries}) exceeded.")
+                            error_text = await resp.text()
+                            self.logger.error(f"API server returned status {resp.status}: {error_text}. Max retries ({max_retries}) exceeded.")
                             break
 
-                    for line in resp.iter_lines():
+                    # Stream response line by line
+                    async for line in resp.content:
                         if line:
                             decoded = line.decode("utf-8")
                             
@@ -481,20 +501,15 @@ class LoadGenServerClient(LoadGenClient):
         for _ in range(self.num_workers):
             self.query_queue.put(None)
 
-        # Wait for workers to finish (executors will be cleaned up in their finally blocks)
+        # Wait for workers to finish (event loops will be cleaned up in their finally blocks)
         for worker in self.worker_threads:
             if worker and worker.is_alive():
                 worker.join(timeout=10)
 
-        # Defensive cleanup: shutdown any remaining executors
-        if self.worker_executors:
-            for worker_id, executor in list(self.worker_executors.items()):
-                try:
-                    self.logger.debug(f"Force-shutting down executor for worker {worker_id}")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                except Exception as e:
-                    self.logger.warning(f"Error shutting down executor for worker {worker_id}: {e}")
-            self.worker_executors.clear()
+        # Cleanup: clear event loops tracking
+        if self.worker_loops:
+            self.logger.debug(f"Clearing {len(self.worker_loops)} worker event loops")
+            self.worker_loops.clear()
 
         self.workers_started = False
         self.logger.info("Worker threads stopped")
