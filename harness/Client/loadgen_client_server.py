@@ -11,12 +11,7 @@ from typing import List
 import aiohttp
 import numpy as np
 
-try:
-    import orjson as json  # Use orjson if available for faster JSON parsing
-    print("Using orjson for JSON parsing")
-except ImportError:
-    print("orjson not available, falling back to built-in json module")
-    import json
+import orjson as json
 
 try:
     import mlperf_loadgen as lg
