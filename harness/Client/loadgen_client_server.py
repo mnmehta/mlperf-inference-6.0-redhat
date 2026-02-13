@@ -61,6 +61,10 @@ class SchedTiming:
             raise ValueError("request_start or request_end is not set")
         return (self.request_end - self.request_start) / 1_000_000
 
+    def stream_overhead_time(self) -> float:
+        """Return streaming overhead time in milliseconds."""
+        return self.stream_func_time() - self.request_time()
+
     def first_token_send_time(self) -> float:
         """Return first token send time in milliseconds."""
         if self.first_token is None or self.first_token_sent is None:
@@ -280,7 +284,8 @@ class LoadGenServerClient(LoadGenClient):
                 "Query %d processing complete: queue_time=%.2f ms, "
                 "func_time=%.2f ms, stream_func_time=%.2f ms, "
                 "request_time=%.2f ms, first_token_send_time=%.2f ms, "
-                "preprocessing_time=%.2f ms, postprocessing_time=%.2f ms"
+                "preprocessing_time=%.2f ms, postprocessing_time=%.2f ms, "
+                "stream_overhead_time=%.2f ms"
             ),
             query_id,
             timing.queue_time(),
@@ -290,6 +295,7 @@ class LoadGenServerClient(LoadGenClient):
             timing.first_token_send_time(),
             timing.preprocessing_time(),
             timing.postprocessing_time(),
+            timing.stream_overhead_time(),
         )
 
     def _submit_first_token_response(self, first_token_id: int | str, query_id: int):
