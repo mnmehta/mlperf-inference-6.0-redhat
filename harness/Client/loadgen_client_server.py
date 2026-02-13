@@ -5,12 +5,17 @@ This module contains the LoadGenServerClient class for Server scenario benchmark
 
 import array
 import asyncio
-import json
 import threading
 from typing import List
 
 import aiohttp
 import numpy as np
+
+try:
+    import orjson as json  # Use orjson if available for faster JSON parsing
+except ImportError:
+    print("orjson not available, falling back to built-in json module")
+    import json
 
 try:
     import mlperf_loadgen as lg
@@ -282,8 +287,7 @@ class LoadGenServerClient(LoadGenClient):
             }
         
         # Log the JSON payload being sent (in debug mode)
-        self.logger.debug(f"LoadGenServerClient._stream_api_vllm() - Sending request to {endpoint_url} self.input_text: {input_text}")
-        self.logger.debug(f"  JSON payload: {json.dumps(json_data, indent=2)}")
+        self.logger.debug("LoadGenServerClient._stream_api_vllm() - Sending request to %s self.input_text: %s", endpoint_url, input_text)
 
         token_s_cache = []  # For text accumulation (fallback)
         token_ids_cache = []  # For token ID accumulation (preferred)
