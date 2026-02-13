@@ -350,8 +350,8 @@ class BaseHarness:
             self.stdout_file.flush()
             self.stderr_file.flush()
             
-            print(f"Stdout redirected to: {stdout_file_path}", file=self.stdout_file, flush=True)
-            print(f"Stderr redirected to: {stderr_file_path}", file=self.stderr_file, flush=True)
+            print(f"Stdout redirected to: {stdout_file_path}", file=self.original_stdout, flush=True)
+            print(f"Stderr redirected to: {stderr_file_path}", file=self.original_stderr, flush=True)
             
             self.logger.info(f"Stdout redirected to: {stdout_file_path}")
             self.logger.info(f"Stderr redirected to: {stderr_file_path}")
