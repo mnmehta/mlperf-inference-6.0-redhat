@@ -319,6 +319,49 @@ class LoadGenServerClient(LoadGenClient):
                             if decoded.startswith("data") and "[DONE]" not in decoded:
                                 try:
                                     json_str = decoded[len("data: "):]
+
+                                    # FAST PATH: Extract first token with minimal parsing before full JSON parse
+                                    # This reduces TTFT latency by avoiding expensive JSON parsing just to get first token ID
+                                    if first:
+                                        first_token_extracted = False
+
+                                        # Try delta_token_ids pattern (most common for streaming)
+                                        if '"delta_token_ids":[' in json_str:
+                                            try:
+                                                start_idx = json_str.index('"delta_token_ids":[') + len('"delta_token_ids":[')
+                                                end_idx = start_idx
+                                                # Extract first integer token ID
+                                                while end_idx < len(json_str) and (json_str[end_idx].isdigit() or json_str[end_idx] == '-'):
+                                                    end_idx += 1
+                                                if end_idx > start_idx:
+                                                    first_token_id = int(json_str[start_idx:end_idx])
+                                                    self._submit_first_token_response(first_token_id, response_ids[0])
+                                                    first = False
+                                                    first_token_extracted = True
+                                                    self.logger.debug(f"Fast-path: Extracted first token ID {first_token_id} before JSON parse")
+                                            except (ValueError, IndexError) as e:
+                                                # Fast path failed, fall through to normal JSON parsing
+                                                self.logger.debug(f"Fast-path delta_token_ids extraction failed: {e}")
+
+                                        # Fallback: try token_ids pattern if delta not found
+                                        if not first_token_extracted and '"token_ids":[' in json_str:
+                                            try:
+                                                start_idx = json_str.index('"token_ids":[') + len('"token_ids":[')
+                                                end_idx = start_idx
+                                                # Extract first integer token ID
+                                                while end_idx < len(json_str) and (json_str[end_idx].isdigit() or json_str[end_idx] == '-'):
+                                                    end_idx += 1
+                                                if end_idx > start_idx:
+                                                    first_token_id = int(json_str[start_idx:end_idx])
+                                                    self._submit_first_token_response(first_token_id, response_ids[0])
+                                                    first = False
+                                                    first_token_extracted = True
+                                                    self.logger.debug(f"Fast-path: Extracted first token ID {first_token_id} from token_ids before JSON parse")
+                                            except (ValueError, IndexError) as e:
+                                                # Fast path failed, fall through to normal JSON parsing
+                                                self.logger.debug(f"Fast-path token_ids extraction failed: {e}")
+
+                                    # Full JSON parse for complete processing (always needed for token accumulation)
                                     data = json.loads(json_str)
 
                                     # DEBUG: Log raw chunk data (first chunk only to avoid spam)
