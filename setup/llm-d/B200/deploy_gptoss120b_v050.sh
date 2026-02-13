@@ -130,6 +130,58 @@ done
 echo "Cleanup complete (PVCs preserved)"
 echo ""
 
+# Ensure namespace has monitoring label and RBAC for Prometheus scraping
+echo "=========================================="
+echo "Configuring namespace for monitoring"
+echo "=========================================="
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo "[DRY RUN] Would ensure namespace $NAMESPACE has label: openshift.io/cluster-monitoring=true"
+    echo "[DRY RUN] Would create RBAC permissions for Prometheus service account"
+else
+    # Create namespace if it doesn't exist
+    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+
+    # Label namespace for Prometheus monitoring
+    kubectl label namespace "$NAMESPACE" openshift.io/cluster-monitoring=true --overwrite
+    echo "Namespace $NAMESPACE labeled for Prometheus monitoring"
+
+    # Create RBAC permissions for Prometheus to scrape this namespace
+    cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-k8s
+  namespace: $NAMESPACE
+rules:
+- apiGroups: [""]
+  resources:
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-k8s
+  namespace: $NAMESPACE
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-k8s
+subjects:
+- kind: ServiceAccount
+  name: prometheus-k8s
+  namespace: openshift-monitoring
+EOF
+    echo "RBAC permissions created for Prometheus service account"
+fi
+echo ""
+
 # Deploy infrastructure (first time or if it doesn't exist)
 echo "=========================================="
 echo "Step 1/3: Deploying Infrastructure"

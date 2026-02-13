@@ -1,0 +1,127 @@
+Grafana Configuration Export Summary
+=====================================
+Export Date: 2026-02-12
+Source Cluster: psap-aus-h200.ibm.rhperfscale.org
+Source Namespace: openshift-operators
+
+Exported Resources
+------------------
+
+1. Grafana Operator Subscription
+   - Name: grafana-operator
+   - Version: v5.21.2
+   - Channel: v5
+   - Source: community-operators
+
+2. Grafana Instance
+   - Name: grafana-a
+   - Version: 12.3.0
+   - Admin User: root
+   - Admin Password: start
+
+3. Service Account
+   - Name: grafana-datasource
+   - Purpose: Prometheus/Thanos authentication
+   - ClusterRole: cluster-monitoring-view
+
+4. Prometheus Datasource
+   - Name: prometheus-datasource
+   - Type: Prometheus
+   - URL: https://thanos-querier-openshift-monitoring.apps.psap-aus-h200.ibm.rhperfscale.org
+   - Authentication: Bearer token (service account)
+
+5. Grafana Dashboards (4 total)
+   - inference-gateway (117 KB)
+   - llm-d-diagnostic-drilldown (90 KB)
+   - llm-d-failure-saturation (66 KB)
+   - llm-d-vllm-overview (100 KB)
+
+6. OpenShift Route
+   - Name: grafana-route
+   - TLS: Edge termination
+   - Target Service: grafana-a-service:3000
+
+Files Created
+-------------
+├── install_grafana.sh                                    (Main installation script - 8.5 KB)
+├── GRAFANA_INSTALLATION.md                               (Detailed documentation - 14 KB)
+├── GRAFANA_EXPORT_SUMMARY.txt                            (This file)
+├── grafana-dashboard-inference-gateway.yaml              (Inference Gateway dashboard - 117 KB)
+├── grafana-dashboard-llm-d-diagnostic-drilldown.yaml     (Diagnostic Drilldown dashboard - 89 KB)
+├── grafana-dashboard-llm-d-failure-saturation.yaml       (Failure Saturation dashboard - 65 KB)
+└── grafana-dashboard-llm-d-vllm-overview.yaml            (vLLM Overview dashboard - 100 KB)
+
+Usage
+-----
+
+To recreate this Grafana setup on a new OpenShift cluster:
+
+1. Copy the entire mlperf_installer directory to the new cluster environment
+
+2. Run the installation script:
+   cd /path/to/mlperf_installer
+   ./install_grafana.sh
+
+3. Access Grafana at the route URL displayed after installation
+
+4. Login with: root / start
+
+5. Change the admin password immediately!
+
+For detailed instructions, see GRAFANA_INSTALLATION.md
+
+Notes
+-----
+
+- The service account token will be regenerated on the new cluster
+- The Thanos querier URL will be auto-detected for the new cluster
+- Dashboard UIDs will change but content will be preserved
+- The route hostname will reflect the new cluster's domain
+
+Dependencies
+------------
+
+The installation requires:
+- OpenShift cluster (4.x)
+- Cluster admin access (for ClusterRoleBinding)
+- OpenShift monitoring stack enabled (default)
+- oc CLI or kubectl configured
+
+What Gets Installed
+-------------------
+
+1. Grafana Operator v5.21.2 (from community-operators)
+2. Grafana instance v12.3.0
+3. Service account with cluster-monitoring-view permissions
+4. Prometheus datasource connected to OpenShift Thanos
+5. 4 pre-configured dashboards for LLM-D monitoring
+6. OpenShift route for external HTTPS access
+
+Security Notes
+--------------
+
+- Default admin password (start) should be changed immediately
+- Service account token is long-lived (10-year expiry)
+- Route uses edge TLS termination
+- Consider implementing OAuth/LDAP for production
+
+Dashboard Descriptions
+----------------------
+
+1. Inference Gateway Dashboard
+   - Monitors Gateway API Inference Extension metrics
+   - Request rates, latencies, pool health, routing decisions
+   - Source: https://github.com/kubernetes-sigs/gateway-api-inference-extension
+
+2. LLM-D vLLM Overview
+   - High-level vLLM deployment metrics
+   - Token generation, throughput, GPU utilization
+
+3. LLM-D Diagnostic Drilldown
+   - Detailed per-pod diagnostics
+   - Queue depths, cache hit rates, latency breakdowns
+
+4. LLM-D Failure Saturation
+   - Error rates by type
+   - Resource and queue saturation indicators
+   - System bottleneck analysis
