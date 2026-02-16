@@ -144,7 +144,8 @@ def main():
         ["Result"],
         [
             "resnet",
-            "retinanet",
+            "yolo-95",
+            "yolo-99",
             "bert-99",
             "bert-99.9",
             "dlrm-v3",
@@ -180,6 +181,8 @@ def main():
         filter_scenarios = {
             "datacenter": {
                 "resnet": [],
+                "yolo-95": [],
+                "yolo-99": [],
                 "bert-99": [],
                 "bert-99.9": [],
                 "stable-diffusion-xl": [],
@@ -192,7 +195,7 @@ def main():
                 "mixtral-8x7b": ["Server", "Offline"],
                 "rgat": ["Offline"],
                 "llama3.1-8b": ["Server", "Offline", "Interactive"],
-                "llama3.1-405b": ["Offline", "Server"],
+                "llama3.1-405b": ["Server", "Offline", "Interactive"],
                 "deepseek-r1": ["Server", "Offline", "Interactive"],
                 "whisper": ["Offline"],
                 "gpt-oss-120b": ["Offline", "Interactive", "Server"],
@@ -201,6 +204,8 @@ def main():
             },
             "edge": {
                 "resnet": ["SingleStream", "MultiStream", "Offline"],
+                "yolo-95": ["SingleStream", "MultiStream", "Offline"],
+                "yolo-99": ["SingleStream", "MultiStream", "Offline"],
                 "bert-99": ["SingleStream", "Offline"],
                 "bert-99.9": ["SingleStream", "Offline"],
                 "dlrm-v2-99": [],
