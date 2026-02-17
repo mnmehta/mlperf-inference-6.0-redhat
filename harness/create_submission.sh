@@ -1,6 +1,7 @@
 
 DIR=$1
 rm -rf SUBMISSION_CHECK
+rm -rf SUBMISSION_TEST
 cp -R ${DIR} SUBMISSION_CHECK
 bash scripts/run_compliance_checks.sh SUBMISSION_CHECK/
 
