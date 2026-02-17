@@ -129,6 +129,8 @@ def add_common_harness_args(parser: argparse.ArgumentParser):
     parser.add_argument("--target-qps", type=float, default=None,
                        dest='server_target_qps',
                        help="Target queries per second for Server scenario (alias for --server-target-qps, Server only)")
+    parser.add_argument("--num-workers", type=int, default=1,
+                       help="Number of worker threads for async query processing (Server scenario only, default: 1)")
     
     # Offline scenario arguments
     parser.add_argument("--offline-back-to-back", action="store_true",
@@ -292,6 +294,7 @@ def parse_common_harness_args(args):
         'enable_trace': args.enable_trace if hasattr(args, 'enable_trace') else False,
         'offline_back_to_back': offline_back_to_back,  # Client flag: controls how client sends requests
         'offline_async_concurrency': args.offline_async_concurrency if hasattr(args, 'offline_async_concurrency') else 10,
+        'num_workers': args.num_workers if hasattr(args, 'num_workers') else 1,
         'audit_config': args.audit_config if hasattr(args, 'audit_config') else None
     }
 

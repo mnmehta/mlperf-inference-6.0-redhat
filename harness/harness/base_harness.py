@@ -111,6 +111,7 @@ class BaseHarness:
                  enable_trace: bool = False,
                  offline_back_to_back: bool = False,
                  offline_async_concurrency: int = 10,
+                 num_workers: int = 1,
                  audit_config: Optional[str] = None):
         """
         Initialize base harness.
@@ -148,6 +149,7 @@ class BaseHarness:
             enable_trace: Enable LoadGen trace logging
             offline_back_to_back: Client flag - send requests individually instead of batching (Offline scenario only)
             offline_async_concurrency: Max concurrent requests for async offline-back-to-back mode (default: 10)
+            num_workers: Number of worker threads for async query processing (Server scenario only, default: 1)
             audit_config: Path to audit configuration file for LoadGen
         """
         # Setup logging early so we can use it in initialization
@@ -218,6 +220,9 @@ class BaseHarness:
         # Client flag: offline_back_to_back (controls how client sends requests, not server config)
         self.offline_back_to_back = offline_back_to_back
         self.offline_async_concurrency = offline_async_concurrency
+        
+        # Number of worker threads for Server scenario
+        self.num_workers = num_workers
         
         # Audit config
         self.audit_config = audit_config
@@ -587,6 +592,10 @@ class BaseHarness:
         # Add print_token_stats to client config if available
         if hasattr(self, 'print_token_stats') and self.print_token_stats:
             client_config['print_token_stats'] = True
+        
+        # Add num_workers to client config (Server scenario only)
+        if hasattr(self, 'num_workers'):
+            client_config['num_workers'] = self.num_workers
         
         # Add visualizations_output_dir to client config so histograms can be saved there
         if hasattr(self, 'visualizations_output_dir'):
