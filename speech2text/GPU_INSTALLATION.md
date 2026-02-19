@@ -13,7 +13,7 @@ ssh -i /home/user/.ssh/key root@16.74.xx.xx
 1. [System Requirements](#system-requirements)
 2. [Step 1: Clone MLPerf Inference Repository](#step-1-clone-mlperf-inference-repository)
 3. [Step 2: Install Miniconda](#step-2-install-miniconda)
-4. [Step 3: Create Python Environment](#step-3-create-python-environment)
+4. [Step 3: Create Conda Environment](#step-3-create-conda-environment)
 5. [Step 4: Install PyTorch](#step-4-install-pytorch)
 6. [Step 5: Install vLLM and Dependencies](#step-5-install-vllm-and-dependencies)
 7. [Step 6: Install MLPerf LoadGen](#step-6-install-mlperf-loadgen)
@@ -28,8 +28,8 @@ ssh -i /home/user/.ssh/key root@16.74.xx.xx
 
 - **OS**: Red Hat Enterprise Linux 9.6
 - **GPUs**: NVIDIA L40S (2x GPUs)
-- **CUDA**: 12.8
-- **Python**: 3.12
+- **CUDA**: 13.0
+- **Python**: 3.12.12
 - **NUMA Nodes**: 2
 - **CPU Cores**: 48 (24 per NUMA node)
 
@@ -74,7 +74,7 @@ source ~/.bashrc
 
 ---
 
-## Step 3: Create Python Environment
+## Step 3: Create Conda Environment
 
 ```bash
 # Accept Conda Terms of Service
@@ -91,7 +91,7 @@ conda activate whisper-gpu-fresh
 **Verify Python Installation:**
 ```bash
 python --version
-# Expected output: Python 3.12.12
+# Expected output: Python 3.12.x
 ```
 
 ---
@@ -134,10 +134,10 @@ GPU 1: NVIDIA L40S
 ## Step 5: Install vLLM and Dependencies
 
 ```bash
-# Install vLLM 0.12.0
+# Install vLLM 0.15.1
 pip install --no-cache-dir \
     --index-url https://pypi.org/simple \
-    vllm==0.12.0
+    vllm==0.15.1
 
 # Install data processing libraries
 pip install --no-cache-dir \
@@ -231,9 +231,9 @@ cd ~/inference/speech2text
 
 # Set workspace paths
 export WORKSPACE_DIR=$(pwd)
-export DATA_DIR=${WORKSPACE_DIR}/data/data
+export DATA_DIR=${WORKSPACE_DIR}/data
 export MODEL_PATH=${WORKSPACE_DIR}/model/whisper-large-v3
-export MANIFEST_FILE="${DATA_DIR}/dev-all-repack-fixed.json"
+export MANIFEST_FILE="${DATA_DIR}/dev-all-repack.json"
 
 # Set scenario (Offline for throughput testing)
 export SCENARIO="Offline"
@@ -262,10 +262,10 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 **Verify Dataset and Model:**
 ```bash
 # Check dataset manifest exists
-ls -lh $MANIFEST_FILE
+ls -lh ${WORKSPACE_DIR}/data
 
 # Check model directory exists
-ls -lh $MODEL_PATH/
+ls -lh ${WORKSPACE_DIR}/model
 
 # Verify manifest has samples
 python -c "import json; data=json.load(open('$MANIFEST_FILE')); print(f'Dataset has {len(data)} samples')"
@@ -314,7 +314,7 @@ python reference_mlperf.py \
 ssh -i /home/user/.ssh/key root@163.74.xx.xx
 
 # Monitor GPUs
-nvidia-smi -l 
+nvidia-smi -l
 
 # Monitor GPUs
 top
@@ -327,9 +327,9 @@ htop
 
 ### Dual GPU (L40S) - Offline Scenario
 ```
-Samples per second: ~2,400
-Tokens per second: ~2,300
-GPU Utilization: 75-90% average (GPU 1 heavily utilized)
+Samples per second: ~48
+Tokens per second: ~3637
+GPU Utilization: 90-99% average 
 Duration: ~10-12 minutes for full dataset (1,633 samples)
 Result: VALID
 ```
@@ -359,5 +359,5 @@ cat logs/accuracy_2gpu/accuracy.txt
 
 ---
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-02-19
 **Environment**: IBM L40s RHEL 9.6
