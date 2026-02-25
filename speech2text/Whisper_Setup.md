@@ -188,7 +188,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 ### L40S Configuration
 
-**Single GPU:**
+**1-GPU:**
 ```bash
 export CUDA_VISIBLE_DEVICES=0
 export NUM_INSTS=1
@@ -198,7 +198,7 @@ export CORES_PER_INST=24
 export START_CORES="0"
 ```
 
-**Dual GPU (recommended):**
+**2-GPU (recommended):**
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1
 export NUM_INSTS=2
@@ -210,24 +210,26 @@ export START_CORES="0,24"
 
 ### H200 Configuration
 
-**Single GPU:**
+**1-GPU (recommended):**
 ```bash
-export CUDA_VISIBLE_DEVICES=0
-export NUM_INSTS=1
+export NUM_CORES=160
 export NUM_NUMA_NODES=1
 export INSTS_PER_NODE=1
+export NUM_INSTS=1
 export CORES_PER_INST=40
+export OMP_NUM_THREADS=40
 export START_CORES="0"
 ```
 
 **8-GPU (recommended):**
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NUM_INSTS=8
+export NUM_CORES=160
 export NUM_NUMA_NODES=2
 export INSTS_PER_NODE=4
-export CORES_PER_INST=10
-export START_CORES="0,10,20,30,80,90,100,110"
+export NUM_INSTS=8
+export CORES_PER_INST=20
+export OMP_NUM_THREADS=20
+export START_CORES="0,80"
 ```
 
 <details>
