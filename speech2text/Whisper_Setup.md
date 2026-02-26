@@ -260,6 +260,16 @@ python -c "import json; data=json.load(open('$MANIFEST_FILE')); print(f'Dataset 
 
 ## Step 10: Run Benchmark
 
+### Apply the patch 
+#### For L40S
+```bash
+git apply l40s.patch
+```
+#### For H200
+```bash
+git apply h200.patch
+```
+
 ```bash
 mkdir -p logs
 ```
@@ -316,6 +326,7 @@ htop
 - GPU Memory Utilization: 95%
 - Max Batched Tokens: 32,000
 - Max Sequences: 256
+- Additionally for L40S we set   kv_cache_dtype="fp8_e4m3",
 
 ---
 
