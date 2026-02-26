@@ -11,7 +11,20 @@ This guide provides instructions for setting up and running MLPerf Inference ben
 
 ## LLM-D Setup
 
-The LLM-D (Large Language Model Deployment) framework is used to deploy the GPT-OSS-120B model server in Kubernetes.
+The LLM-D framework is used to deploy the GPT-OSS-120B model server in Kubernetes.
+
+### GPU Configurations
+
+This repository provides llm-d configurations for two GPU types:
+- **H200**: Located in `setup/llm-d/H200/`
+- **B200**: Located in `setup/llm-d/B200/`
+
+Both configurations include:
+- Automated deployment script (`deploy_gptoss120b_v050.sh`)
+- EPP configuration for optimized scheduling
+- Server and Offline mode overrides
+
+**Choose the directory matching your GPU type** when following the instructions below.
 
 ### Prerequisites
 
@@ -25,7 +38,11 @@ The LLM-D (Large Language Model Deployment) framework is used to deploy the GPT-
 
 1. **Navigate to the setup directory:**
    ```bash
-   cd setup/llm-d/
+   # For H200 GPUs:
+   cd setup/llm-d/H200/
+
+   # For B200 GPUs:
+   cd setup/llm-d/B200/
    ```
 
 2. **Deploy GPT-OSS-120B in server mode:**
@@ -45,7 +62,24 @@ The LLM-D (Large Language Model Deployment) framework is used to deploy the GPT-
    - Deploy infrastructure, GAIE, and model service in order
    - Show pod status after deployment
 
-3. **Verify deployment:**
+3. **Update EPP Configuration**
+
+   The EPP (Endpoint Picker Plugin) configuration optimizes request routing for MLPerf workloads:
+
+   ```bash
+   # Update EPP with custom configuration
+   bash update_epp_config.sh
+   ```
+
+   This script:
+   - Applies custom EPP configuration with optimized scoring weights
+   - Enables kv-cache-utilization-scorer and queue-scorer plugins
+   - Restarts the EPP pod to apply changes
+   - Sets log verbosity to 7 for better debugging
+
+   For more details, see `EPP_CONFIG_COMPARISON.md` in your GPU directory.
+
+4. **Verify deployment:**
    ```bash
    # Check pod status
    kubectl get pods -n llm-d-bench -l app.kubernetes.io/instance=ms-inference-scheduling
@@ -57,7 +91,7 @@ The LLM-D (Large Language Model Deployment) framework is used to deploy the GPT-
    kubectl logs -n llm-d-bench -l app.kubernetes.io/component=decode --tail=50 -f
    ```
 
-4. **Get the API server URL:**
+5. **Get the API server URL:**
    ```bash
    # Get the service URL
    kubectl get svc -n llm-d-bench
@@ -381,9 +415,17 @@ If the submission checker fails, check:
 ### Complete Workflow
 
 ```bash
-# 1. Deploy LLM-D server
-cd setup/llm-d/
+# 1. Deploy LLM-D server (choose H200 or B200)
+# For H200:
+cd setup/llm-d/H200/
 bash deploy_gptoss120b_v050.sh server
+
+# For B200:
+cd setup/llm-d/B200/
+bash deploy_gptoss120b_v050.sh server
+
+# 1b. Update EPP configuration (recommended)
+bash update_epp_config.sh
 
 # 2. Set up environment variables
 cd ../../harness/scripts
@@ -405,6 +447,9 @@ bash create_submission.sh harness_output
 
 ## Additional Resources
 
-- LLM-D documentation: See `setup/llm-d/OVERRIDE_FILES_README.md`
+- LLM-D documentation:
+  - H200: See `setup/llm-d/H200/OVERRIDE_FILES_README.md`
+  - B200: See `setup/llm-d/B200/OVERRIDE_FILES_README.md`
+  - EPP Configuration: See `setup/llm-d/H200/EPP_CONFIG_COMPARISON.md` or `setup/llm-d/B200/EPP_CONFIG_COMPARISON.md`
 - Environment variables script: `harness/scripts/set_env_vars.sh`
 - Submission converter: `harness/scripts/convert_to_submission.py`
