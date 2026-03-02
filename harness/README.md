@@ -63,7 +63,8 @@ Both configurations include:
    - Show pod status after deployment
 
 3. **Update EPP Configuration**
-
+   > ⚠️ Perform this step for Offline only
+   
    The EPP (Endpoint Picker Plugin) configuration optimizes request routing for MLPerf workloads:
 
    ```bash
@@ -102,7 +103,10 @@ Both configurations include:
    http://<service-name>.<namespace>.svc.cluster.local:8000
    Eg http://infra-inference-scheduling-inference-gateway-istio.llm-d-bench.svc.cluster.local/
    ```
-
+6. **Openshift/Kubernetes and System checks**
+   - Ensure ```ulimit -n 65536``` or to a higher value
+   - Ensure pod pid limit is also set to a higher value
+   
 ### Environment Variables
 
 You can customize the deployment with environment variables:
