@@ -36,7 +36,11 @@ Both configurations include:
 
 ### Deployment Steps
 
-1. **Navigate to the setup directory:**
+1. **Clone the repo**   
+```bash 
+git clone --recurse-submodule https://github.com/openshift-psap/mlperf-inference-6.0-redhat.git
+```
+2. **Navigate to the setup directory:**
    ```bash
    # For H200 GPUs:
    cd setup/llm-d/H200/
@@ -45,7 +49,7 @@ Both configurations include:
    cd setup/llm-d/B200/
    ```
 
-2. **Deploy GPT-OSS-120B in server mode:**
+3. **Deploy GPT-OSS-120B in server mode:**
    ```bash
    bash deploy_gptoss120b_v050.sh server
    ```
@@ -62,7 +66,7 @@ Both configurations include:
    - Deploy infrastructure, GAIE, and model service in order
    - Show pod status after deployment
 
-3. **Update EPP Configuration**
+4. **Update EPP Configuration**
    > ⚠️ Perform this step for Offline only
    
    The EPP (Endpoint Picker Plugin) configuration optimizes request routing for MLPerf workloads:
@@ -80,7 +84,7 @@ Both configurations include:
 
    For more details, see `EPP_CONFIG_COMPARISON.md` in your GPU directory.
 
-4. **Verify deployment:**
+5. **Verify deployment:**
    ```bash
    # Check pod status
    kubectl get pods -n llm-d-bench -l app.kubernetes.io/instance=ms-inference-scheduling
@@ -92,7 +96,7 @@ Both configurations include:
    kubectl logs -n llm-d-bench -l app.kubernetes.io/component=decode --tail=50 -f
    ```
 
-5. **Get the API server URL:**
+6. **Get the API server URL:**
    ```bash
    # Get the service URL
    kubectl get svc -n llm-d-bench
@@ -103,7 +107,7 @@ Both configurations include:
    http://<service-name>.<namespace>.svc.cluster.local:8000
    Eg http://infra-inference-scheduling-inference-gateway-istio.llm-d-bench.svc.cluster.local/
    ```
-6. **Openshift/Kubernetes and System checks**
+7. **Openshift/Kubernetes and System checks**
    - Ensure ```ulimit -n 65536``` or to a higher value
    - Ensure pod pid limit is also set to a higher value
    
@@ -126,13 +130,25 @@ The client pod is where the MLPerf harness tests will run. This pod needs to be 
 
 ### Setting Up Environment Variables
 
-1. **Source the environment variables script:**
+1. **Clone the repo and environment setup**
+   ```bash
+   #Clone repo
+   git clone --recurse-submodule https://github.com/openshift-psap/mlperf-inference-6.0-redhat.git
+   #Setup environment
+   #This script clones and repo and sets up  the environment 
+   bash setup/client/client_setup.sh 
+   ```
+   ```bash
+   #Set ulimit
+   ulimit -n 65536 
+   ```
+2. **Source the environment variables script:**
    ```bash
    cd harness/scripts
    source set_env_vars.sh
    ```
 
-2. **Set required environment variables:**
+3. **Set required environment variables:**
    ```bash
    export DATASET_DIR=/path/to/datasets
    export PERF_DATASET=/path/to/perf/perf_eval_ref.parquet
@@ -147,7 +163,7 @@ The client pod is where the MLPerf harness tests will run. This pod needs to be 
    export SERVER_TARGET_QPS=3  # For Server scenario
    ```
 
-3. **Verify environment variables:**
+4. **Verify environment variables:**
    ```bash
    # Print current configuration
    print_env_vars
