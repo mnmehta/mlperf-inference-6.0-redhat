@@ -34,6 +34,21 @@ Both configurations include:
 - HuggingFace token secret `llm-d-hf-token` created in your namespace
 - Model artifacts available at the PVC path specified in override files
 
+#### Local Machine Prerequisites (for running deploy scripts)
+
+The deployment script uses Helmfile to orchestrate Helm charts. Install the following before deploying:
+
+```bash
+# macOS (using Homebrew)
+brew install helm helmfile
+helm plugin install https://github.com/databus23/helm-diff
+
+# RHEL/Fedora
+sudo dnf install helm
+# helmfile: download from https://github.com/helmfile/helmfile/releases
+helm plugin install https://github.com/databus23/helm-diff
+```
+
 ### Deployment Steps
 
 1. **Clone the repo**   
