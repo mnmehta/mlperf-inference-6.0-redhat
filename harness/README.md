@@ -93,7 +93,7 @@ git clone --recurse-submodule https://github.com/openshift-psap/mlperf-inference
    kubectl get pods -n llm-d-bench -l app.kubernetes.io/instance=ms-inference-scheduling -w
    
    # Check logs
-   kubectl logs -n llm-d-bench -l app.kubernetes.io/component=decode --tail=50 -f
+   kubectl logs -n llm-d-bench -l llm-d.ai/role=decode --tail=50 -f --max-log-requests=8
    ```
 
 6. **Get the API server URL:**
@@ -107,9 +107,22 @@ git clone --recurse-submodule https://github.com/openshift-psap/mlperf-inference
    http://<service-name>.<namespace>.svc.cluster.local:8000
    Eg http://infra-inference-scheduling-inference-gateway-istio.llm-d-bench.svc.cluster.local/
    ```
-7. **Openshift/Kubernetes and System checks**
-   - Ensure ```ulimit -n 65536``` or to a higher value
-   - Ensure pod pid limit is also set to a higher value
+
+   > **Note:** This URL is only reachable from within the cluster. The harness runs from a client pod (see [Client Pod Setup](#client-pod-setup)).
+
+   Verify the model is serving (from inside the cluster):
+   ```bash
+   curl $API_SERVER_URL/v1/models
+   ```
+
+7. **⚠️ Set ulimit (required):**
+   ```bash
+   ulimit -n 65536
+   ```
+   This must be set in every shell session before running tests. Without it, the harness will fail with too many open files.
+
+8. **Other system checks**
+   - Ensure pod pid limit is set to a higher value
    
 ### Environment Variables
 
@@ -126,26 +139,34 @@ NAMESPACE=my-namespace LLMD_DIR=/home/user/llm-d bash deploy_gptoss120b_v050.sh 
 
 ## Client Pod Setup
 
-The client pod is where the MLPerf harness tests will run. This pod needs to be able to connect to the LLM-D API server.
+The client pod is where the MLPerf harness tests will run. It must run inside the cluster to connect to the LLM-D API server.
+
+### Creating the Client Pod
+
+1. **Create the client pod and copy datasets (from your local machine):**
+   ```bash
+   kubectl apply -f setup/client/client-pod.yaml -n <namespace>
+   kubectl exec mlperf-client -n <namespace> -- mkdir -p /workspace/datasets
+   kubectl cp /path/to/datasets/ <namespace>/mlperf-client:/workspace/datasets/
+   ```
+
+   Datasets can be downloaded from: https://inference.mlcommons-storage.org/index.html#gpt-oss-benchmark
+
+2. **Copy setup script and run it inside the pod:**
+   ```bash
+   kubectl cp setup/client/client_setup.sh <namespace>/mlperf-client:/workspace/client_setup.sh
+   kubectl exec -it mlperf-client -n <namespace> -- bash -c 'cd /workspace && bash client_setup.sh'
+   ```
 
 ### Setting Up Environment Variables
 
-1. **Clone the repo and environment setup**
+3. **Exec into the pod, activate venv, and source environment variables:**
    ```bash
-   #Clone repo
-   git clone --recurse-submodule https://github.com/openshift-psap/mlperf-inference-6.0-redhat.git
-   #Setup environment
-   #This script clones and repo and sets up  the environment 
-   bash setup/client/client_setup.sh 
-   ```
-   ```bash
-   #Set ulimit
-   ulimit -n 65536 
-   ```
-2. **Source the environment variables script:**
-   ```bash
-   cd harness/scripts
-   source set_env_vars.sh
+   kubectl exec -it mlperf-client -n <namespace> -- bash
+   source /workspace/gptoss_harness/bin/activate
+   cd /workspace/mlperf-inference-6.0-redhat/harness
+   source scripts/set_env_vars.sh
+   ulimit -n 65536
    ```
 
 3. **Set required environment variables:**
