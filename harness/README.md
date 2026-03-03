@@ -36,6 +36,11 @@ Both configurations include:
 
 #### Local Machine Prerequisites (for running deploy scripts)
 
+Set your kubeconfig to the correct cluster:
+```bash
+export KUBECONFIG=/path/to/your/kubeconfig
+```
+
 The deployment script uses Helmfile to orchestrate Helm charts. Install the following before deploying:
 
 ```bash
