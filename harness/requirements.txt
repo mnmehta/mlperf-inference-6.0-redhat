@@ -17,3 +17,7 @@ seaborn
 # MLflow integration (optional)
 mlflow
 boto3
+
+# MLflow integration (optional)
+mlflow
+
