@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mlperf-client
+spec:
+  containers:
+  - name: client
+    image: python:3.12-slim
+    command: ["sleep", "infinity"]
+  restartPolicy: Never
+
