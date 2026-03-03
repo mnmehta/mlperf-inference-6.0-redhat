@@ -1,0 +1,18 @@
+# Core dependencies (required)
+PyYAML
+numpy
+requests
+pandas
+pybind11
+aiohttp
+orjson
+
+# Tokenizer (required for API mode with LLM-D)
+transformers
+
+# Visualization (optional but recommended)
+matplotlib
+
+# MLflow integration (optional)
+mlflow
+
